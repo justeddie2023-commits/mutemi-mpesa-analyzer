@@ -591,6 +591,18 @@ def delete_loan_companies(selected):
     ]
 
 
+def human_file_size(size_bytes):
+    try:
+        size_bytes = float(size_bytes)
+    except Exception:
+        return ""
+    if size_bytes < 1024:
+        return f"{size_bytes:.0f} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
 def render_loan_company_list(companies):
     if not companies:
         st.caption("No loan companies added yet.")
@@ -666,19 +678,102 @@ def main():
             .main-title {
                 background: linear-gradient(90deg, #033312 0%, #044d1f 100%);
                 color: white;
-                padding: 18px 18px;
+                padding: 18px 20px;
                 border-radius: 0px;
-                margin-bottom: 14px;
+                margin-bottom: 12px;
                 border: 1px solid #0E5A2A;
             }
             .main-title h2 {
-                font-size: 2.1rem;
+                font-size: 2.05rem;
                 font-weight: 800;
             }
             .subtitle {
                 color: #E4F7E8;
                 font-size: 0.95rem;
-                margin-top: 4px;
+                margin-top: 5px;
+            }
+            .top-action-bar {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                padding: 12px 14px;
+                margin-bottom: 12px;
+                min-height: 62px;
+            }
+            .top-file-title {
+                font-size: 0.85rem;
+                font-weight: 800;
+                color: #0F172A;
+                margin-bottom: 2px;
+            }
+            .top-file-name {
+                font-size: 0.93rem;
+                color: #334155;
+                word-break: break-all;
+            }
+            .upload-card {
+                background: white;
+                border-radius: 8px;
+                border: 1px solid #E2E8F0;
+                padding: 10px;
+                margin: 8px 0 14px 0;
+            }
+            .uploaded-file-box {
+                background: #F8FAFC;
+                border: 1px solid #D6DEE8;
+                border-radius: 7px;
+                padding: 9px 10px;
+                margin-top: 8px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .file-icon {
+                width: 34px;
+                height: 34px;
+                border-radius: 6px;
+                background: #263447;
+                color: white;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: 800;
+                font-size: 0.85rem;
+            }
+            .file-meta {
+                line-height: 1.25;
+                flex: 1;
+                overflow: hidden;
+            }
+            .file-name {
+                color: #0F172A;
+                font-size: 0.88rem;
+                font-weight: 700;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .file-size {
+                color: #64748B;
+                font-size: 0.78rem;
+            }
+            .password-card {
+                background: white;
+                border: 1px solid #CBD5E1;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 16px;
+            }
+            .password-title {
+                color: #0F172A;
+                font-size: 1rem;
+                font-weight: 800;
+                margin-bottom: 4px;
+            }
+            .password-file {
+                color: #475569;
+                font-size: 0.82rem;
+                word-break: break-all;
+                margin-bottom: 8px;
             }
             .metric-card {
                 border-radius: 0px;
@@ -708,7 +803,7 @@ def main():
                 margin-bottom: 14px;
             }
             .sidebar-heading {
-                font-size: 2rem;
+                font-size: 1.8rem;
                 font-weight: 800;
                 color: #15304B;
                 margin-bottom: 8px;
@@ -771,7 +866,8 @@ def main():
             }
             .stButton > button {
                 border-radius: 0px !important;
-                font-weight: 700 !important;
+                font-weight: 800 !important;
+                min-height: 42px;
             }
             .stDownloadButton > button {
                 border-radius: 0px !important;
@@ -790,18 +886,61 @@ def main():
         unsafe_allow_html=True,
     )
 
+    uploaded_file = None
+    password = ""
+    show_password = False
+
     with st.sidebar:
         st.markdown('<div class="sidebar-heading">Statement Upload</div>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"])
+        st.caption("Upload M-PESA PDF statement")
+
+        uploaded_file = st.file_uploader(
+            "Upload M-PESA PDF statement",
+            type=["pdf"],
+            label_visibility="collapsed",
+        )
+
+        if uploaded_file is not None:
+            st.markdown(
+                f"""
+                <div class="uploaded-file-box">
+                    <div class="file-icon">PDF</div>
+                    <div class="file-meta">
+                        <div class="file-name">{uploaded_file.name}</div>
+                        <div class="file-size">{human_file_size(uploaded_file.size)}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
+                <div class="upload-card">
+                    <div style="font-weight:700;color:#0F172A;">No statement selected</div>
+                    <div style="color:#64748B;font-size:0.82rem;">Choose a PDF statement to begin.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown('<div class="password-card">', unsafe_allow_html=True)
+        st.markdown('<div class="password-title">Password Protected Statement</div>', unsafe_allow_html=True)
+        if uploaded_file is not None:
+            st.markdown(f'<div class="password-file">File: {uploaded_file.name}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="password-file">File: no statement selected</div>', unsafe_allow_html=True)
+
+        show_password = st.checkbox("Show password", value=False)
         password = st.text_input(
-            "PDF password",
-            type="password",
+            "Enter PDF password:",
+            type="default" if show_password else "password",
             help="Leave blank if the PDF is not password protected.",
         )
-        analyze_clicked = st.button("Analyze Statement", type="primary", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown("<hr style='margin:18px 0;border:0;border-top:1px solid #C7D0DA;'>", unsafe_allow_html=True)
-        st.markdown('<div class="sidebar-heading" style="font-size:1.75rem;">Loan Companies</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-heading" style="font-size:1.65rem;">Loan Companies</div>', unsafe_allow_html=True)
         st.markdown('<div class="sidebar-subtext">Rows matching these loan companies are excluded from the main Paid In total. Add or delete loan companies, then click Analyze.</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="block-label">Current loan companies</div>', unsafe_allow_html=True)
@@ -837,13 +976,35 @@ def main():
         unsafe_allow_html=True,
     )
 
+    top_left, top_right = st.columns([4, 1])
+    with top_left:
+        file_name = uploaded_file.name if uploaded_file is not None else "No statement selected."
+        file_size = human_file_size(uploaded_file.size) if uploaded_file is not None else ""
+        st.markdown(
+            f"""
+            <div class="top-action-bar">
+                <div class="top-file-title">Statement File</div>
+                <div class="top-file-name">{file_name} {f'• {file_size}' if file_size else ''}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with top_right:
+        st.write("")
+        top_analyze_clicked = st.button(
+            "Analyze Statement",
+            type="primary",
+            use_container_width=True,
+            disabled=uploaded_file is None,
+        )
+
     if uploaded_file is None:
         st.info("Upload an M-PESA PDF statement from the left panel to begin.")
         return
 
     pdf_bytes = uploaded_file.getvalue()
 
-    if analyze_clicked:
+    if top_analyze_clicked:
         with st.spinner("Analyzing statement..."):
             result, error = analyze_pdf(pdf_bytes, password, st.session_state.loan_companies)
 
