@@ -591,6 +591,15 @@ def delete_loan_companies(selected):
     ]
 
 
+def render_loan_company_list(companies):
+    if not companies:
+        st.caption("No loan companies added yet.")
+        return
+
+    html_items = ''.join(f'<div class="loan-item">{c}</div>' for c in companies)
+    st.markdown(f'<div class="loan-list-box">{html_items}</div>', unsafe_allow_html=True)
+
+
 def analyze_pdf(pdf_bytes, password, loan_companies):
     doc, error = open_pdf_from_bytes(pdf_bytes, password=password)
 
@@ -643,51 +652,137 @@ def main():
         """
         <style>
             .stApp {
-                background: #F1F5F9;
+                background: #F3F5F7;
+            }
+            [data-testid="stSidebar"] {
+                background: #EEF1F4;
+                border-right: 1px solid #C9D2DC;
+            }
+            [data-testid="stSidebar"] .block-container {
+                padding-top: 1rem;
+                padding-left: 1rem;
+                padding-right: 1rem;
             }
             .main-title {
-                background: #052E16;
+                background: linear-gradient(90deg, #033312 0%, #044d1f 100%);
                 color: white;
                 padding: 18px 18px;
-                border-radius: 14px;
+                border-radius: 0px;
                 margin-bottom: 14px;
+                border: 1px solid #0E5A2A;
+            }
+            .main-title h2 {
+                font-size: 2.1rem;
+                font-weight: 800;
             }
             .subtitle {
-                color: #BBF7D0;
-                font-size: 0.92rem;
+                color: #E4F7E8;
+                font-size: 0.95rem;
                 margin-top: 4px;
             }
             .metric-card {
-                border-radius: 14px;
-                padding: 16px;
-                border: 1px solid #CBD5E1;
-                min-height: 108px;
-                margin-bottom: 8px;
+                border-radius: 0px;
+                padding: 14px 16px;
+                border: 1px solid #BCC8D6;
+                min-height: 110px;
+                margin-bottom: 12px;
+                box-shadow: none;
             }
             .metric-title {
-                font-size: 0.84rem;
+                font-size: 0.86rem;
                 font-weight: 700;
-                opacity: 0.92;
+                opacity: 0.95;
             }
             .metric-value {
-                font-size: 1.65rem;
+                font-size: 1.2rem;
                 font-weight: 800;
-                margin-top: 10px;
+                margin-top: 12px;
                 word-break: break-word;
+                line-height: 1.2;
             }
             .section-card {
                 background: white;
-                padding: 16px;
-                border-radius: 14px;
-                border: 1px solid #CBD5E1;
+                padding: 12px;
+                border-radius: 0px;
+                border: 1px solid #BCC8D6;
                 margin-bottom: 14px;
             }
-            @media only screen and (max-width: 700px) {
+            .sidebar-heading {
+                font-size: 2rem;
+                font-weight: 800;
+                color: #15304B;
+                margin-bottom: 8px;
+            }
+            .sidebar-subtext {
+                color: #54657A;
+                font-size: 0.93rem;
+                margin-bottom: 10px;
+            }
+            .loan-list-box {
+                border: 1px solid #909CAB;
+                background: white;
+                max-height: 240px;
+                overflow-y: auto;
+                padding: 4px 0;
+                margin-top: 8px;
+                margin-bottom: 10px;
+            }
+            .loan-item {
+                padding: 3px 8px;
+                font-size: 0.95rem;
+                line-height: 1.35;
+                border-bottom: 1px solid #EEF2F6;
+                color: #111827;
+            }
+            .loan-item:last-child {
+                border-bottom: none;
+            }
+            .block-label {
+                font-weight: 700;
+                color: #243B53;
+                margin-bottom: 6px;
+            }
+            div[data-baseweb="tab-list"] {
+                gap: 2px;
+            }
+            button[data-baseweb="tab"] {
+                background: #ECEFF3 !important;
+                border: 1px solid #AEB9C4 !important;
+                border-bottom: none !important;
+                border-radius: 0 !important;
+                padding: 10px 14px !important;
+            }
+            button[data-baseweb="tab"] p {
+                font-weight: 700 !important;
+                font-size: 0.95rem !important;
+                color: #20344D !important;
+            }
+            button[aria-selected="true"][data-baseweb="tab"] {
+                background: white !important;
+                border-bottom: 2px solid white !important;
+            }
+            div[data-testid="stDataFrame"] {
+                border: 1px solid #BCC8D6;
+                border-radius: 0px;
+                background: white;
+            }
+            div[data-testid="stAlert"] {
+                border-radius: 0px;
+            }
+            .stButton > button {
+                border-radius: 0px !important;
+                font-weight: 700 !important;
+            }
+            .stDownloadButton > button {
+                border-radius: 0px !important;
+                font-weight: 700 !important;
+            }
+            @media only screen and (max-width: 900px) {
                 .metric-value {
-                    font-size: 1.25rem;
+                    font-size: 1.05rem;
                 }
-                .main-title {
-                    padding: 14px;
+                .main-title h2 {
+                    font-size: 1.5rem;
                 }
             }
         </style>
@@ -695,31 +790,27 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        f"""
-        <div class="main-title">
-            <h2 style="margin:0;">{APP_TITLE}</h2>
-            <div class="subtitle">Mobile-friendly loan company matching, Paid In analysis, ELLEGANT CREDIT tracking, and risk rating</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     with st.sidebar:
-        st.header("Statement Upload")
-
+        st.markdown('<div class="sidebar-heading">Statement Upload</div>', unsafe_allow_html=True)
         uploaded_file = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"])
-
         password = st.text_input(
             "PDF password",
             type="password",
             help="Leave blank if the PDF is not password protected.",
         )
+        analyze_clicked = st.button("Analyze Statement", type="primary", use_container_width=True)
 
-        st.divider()
-        st.header("Loan Companies")
+        st.markdown("<hr style='margin:18px 0;border:0;border-top:1px solid #C7D0DA;'>", unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-heading" style="font-size:1.75rem;">Loan Companies</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-subtext">Rows matching these loan companies are excluded from the main Paid In total. Add or delete loan companies, then click Analyze.</div>', unsafe_allow_html=True)
 
-        st.text_input("Add loan company", key="new_loan_company", on_change=add_loan_company)
+        st.markdown('<div class="block-label">Current loan companies</div>', unsafe_allow_html=True)
+        render_loan_company_list(st.session_state.loan_companies)
+
+        st.text_input("Add loan company", key="new_loan_company")
+        if st.button("Add", use_container_width=True):
+            add_loan_company()
+            st.rerun()
 
         selected_delete = st.multiselect(
             "Select companies to delete",
@@ -727,21 +818,24 @@ def main():
         )
 
         col_a, col_b = st.columns(2)
-
         with col_a:
             if st.button("Delete", use_container_width=True):
                 delete_loan_companies(selected_delete)
                 st.rerun()
-
         with col_b:
             if st.button("Reset", use_container_width=True):
                 st.session_state.loan_companies = DEFAULT_LOAN_COMPANIES.copy()
                 st.rerun()
 
-        st.caption("Current loan companies:")
-        st.write(st.session_state.loan_companies)
-
-        analyze_clicked = st.button("Analyze Statement", type="primary", use_container_width=True)
+    st.markdown(
+        f"""
+        <div class="main-title">
+            <h2 style="margin:0;">{APP_TITLE}</h2>
+            <div class="subtitle">Loan company matching, exclusion analysis, monthly Paid In totals, and ELLEGANT CREDIT payment tracking</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if uploaded_file is None:
         st.info("Upload an M-PESA PDF statement from the left panel to begin.")
@@ -772,25 +866,23 @@ def main():
     total_paid_in = risk["total_paid_in"]
     total_loan = risk["total_loan"]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        style_metric_card("Customer Name", analysis["customer_name"], "#E2E8F0", "#0F172A")
-    with col2:
-        style_metric_card("Transactions Parsed", str(len(analysis["transactions"])), "#DBEAFE", "#1E3A8A")
-
-    col3, col4, col5 = st.columns(3)
-    with col3:
-        style_metric_card("Monthly Paid In Total", money(total_paid_in), "#DCFCE7", "#166534")
-    with col4:
-        style_metric_card("Loan Repayment Total", money(total_loan), "#FFEDD5", "#9A3412")
-    with col5:
+    c1, c2, c3, c4, c5 = st.columns([1.3, 1.1, 1.1, 1.1, 0.9])
+    with c1:
+        style_metric_card("Customer Name", analysis["customer_name"], "#D9E4EF", "#0F2B46")
+    with c2:
+        style_metric_card("Transactions Parsed", str(len(analysis["transactions"])), "#D9E4EF", "#1E3A8A")
+    with c3:
+        style_metric_card("Monthly Paid In Total", money(total_paid_in), "#CFE9D7", "#166534")
+    with c4:
+        style_metric_card("Loan Repayment Total", money(total_loan), "#F0DEC2", "#9A3412")
+    with c5:
         style_metric_card("Risk Rating", f'{risk["rating"]} ({risk["score"]})', risk_bg, risk_fg)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Matched Loan Companies",
         "Monthly Paid In",
-        "ELLEGANT CREDIT",
-        "Risk Profile",
+        "ELLEGANT CREDIT Summary",
+        "Customer Risk Profile",
         "Full Summary",
     ])
 
@@ -803,7 +895,6 @@ def main():
                     "Total Matches": result["count"],
                     "Page Number(s)": ", ".join(str(p) for p in sorted(result["pages"])),
                 })
-
         if matched_rows:
             st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
         else:
@@ -820,13 +911,13 @@ def main():
                 "Paid In Excluded": money(values["paid_in_excluded_matched"]),
                 "Excluded Rows": values["excluded_paid_in_rows"],
             })
-
         if monthly_rows:
             st.dataframe(pd.DataFrame(monthly_rows), use_container_width=True, hide_index=True)
         else:
             st.warning("No monthly Paid In rows were found.")
 
     with tab3:
+        st.markdown('<div class="section-card"><h4 style="margin-top:0;">ELLEGANT CREDIT LTD Payment Summary</h4><div style="color:#667085;">This block lists each ELLEGANT CREDIT transaction by month, including date paid, receipt number, and amount paid.</div></div>', unsafe_allow_html=True)
         if analysis["ellegant_rows"]:
             df = pd.DataFrame(analysis["ellegant_rows"])
             df["Amount Paid"] = df["Amount Paid"].map(money)
@@ -846,7 +937,6 @@ def main():
             """,
             unsafe_allow_html=True,
         )
-
         guide = pd.DataFrame([
             {"Loan Percentage of Total Amount": "0% - 10%", "Risk Rating": "Very Good", "Score": 5},
             {"Loan Percentage of Total Amount": "11% - 25%", "Risk Rating": "Good", "Score": 4},
@@ -871,7 +961,7 @@ def main():
             data=analysis["report"].encode("utf-8"),
             file_name="mutemi_mpesa_mobile_summary.txt",
             mime="text/plain",
-            use_container_width=True,
+            use_container_width=False,
         )
         st.text_area("Full Summary", analysis["report"], height=500)
 
