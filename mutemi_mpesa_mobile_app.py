@@ -868,7 +868,7 @@ def main():
         """
         <style>
             .stApp { background: #F1F5F9; }
-            .block-container { padding: 0.6rem 0.85rem 1rem 0.85rem; max-width: 100% !important; }
+            .block-container { padding: 0.35rem 0.85rem 1rem 0.85rem; max-width: 100% !important; }
             [data-testid="stSidebar"] { display: none; }
             .offline-header {
                 background:#052E16;
@@ -952,6 +952,8 @@ def main():
             .section-card { background:white; border:1px solid #CBD5E1; padding:14px 16px; margin: 8px 0 12px 0; }
             .section-title { margin:0; font-size:1.15rem; font-weight:800; color:#0F172A; }
             .section-subtitle { color:#475569; font-size:0.88rem; margin-top:6px; }
+            .stButton button[kind="primary"] { background:#16A34A !important; color:white !important; border:1px solid #16A34A !important; }
+            .stButton button[kind="primary"]:hover { background:#15803D !important; color:white !important; border-color:#15803D !important; }
             .stButton > button { border-radius:0 !important; font-weight:800 !important; min-height:42px; }
             .stDownloadButton > button { border-radius:0 !important; font-weight:800 !important; }
             div[data-testid="stDataFrame"] { border:1px solid #CBD5E1; border-radius:0; background:white; }
@@ -976,6 +978,9 @@ def main():
     password = ""
 
     # Top statement bar and analyze button
+    top_button_label = "Re-analyze Statement" if st.session_state.get("analysis") else "Analyze Statement"
+    left_button_label = "Re-analyze Statement" if st.session_state.get("analysis") else "Analyze Statement"
+
     top_file_col, top_btn_col = st.columns([5, 1])
     with top_file_col:
         current_file = st.session_state.get("current_file_name", "No statement selected.")
@@ -991,7 +996,7 @@ def main():
         )
     with top_btn_col:
         st.write("")
-        analyze_clicked_top = st.button("Analyze Statement", type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"))
+        analyze_clicked_top = st.button(top_button_label, type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"), key="top_analyze_statement_button")
 
     left_col, right_col = st.columns([1.05, 4.0], gap="small")
 
@@ -999,7 +1004,7 @@ def main():
         st.markdown('<div class="left-panel">', unsafe_allow_html=True)
         st.markdown('<div class="left-title">Statement Upload</div>', unsafe_allow_html=True)
         st.caption("Upload M-PESA PDF statement")
-        uploaded_file = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"], label_visibility="collapsed")
+        uploaded_file = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"], label_visibility="collapsed", key="statement_pdf_uploader")
 
         if uploaded_file is not None:
             st.session_state.uploaded_pdf_bytes = uploaded_file.getvalue()
@@ -1034,28 +1039,28 @@ def main():
         st.markdown('<div class="password-card">', unsafe_allow_html=True)
         st.markdown('<div class="password-title">Password Protected Statement</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="password-file">File: {st.session_state.get("current_file_name", "No statement selected.")}</div>', unsafe_allow_html=True)
-        show_password = st.checkbox("Show password", value=False)
-        password = st.text_input("Enter PDF password:", type="default" if show_password else "password")
+        show_password = st.checkbox("Show password", value=False, key="show_pdf_password_checkbox")
+        password = st.text_input("Enter PDF password:", type="default" if show_password else "password", key="pdf_password_input")
         st.markdown('</div>', unsafe_allow_html=True)
 
-        analyze_clicked_left = st.button("Analyze Statement", type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"))
+        analyze_clicked_left = st.button(left_button_label, type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"), key="left_analyze_statement_button")
 
         st.markdown('<hr style="border:0;border-top:1px solid #D0D7E2;margin:18px 0;">', unsafe_allow_html=True)
         st.markdown('<div class="left-title" style="font-size:1.25rem;">Loan Companies</div>', unsafe_allow_html=True)
         st.markdown('<div class="left-help">Rows matching these loan companies are excluded from the main Paid In total. Add or delete loan companies, then click Re-analyze.</div>', unsafe_allow_html=True)
         render_loan_company_list(st.session_state.loan_companies)
         st.text_input("Add loan company", key="new_loan_company", label_visibility="collapsed")
-        if st.button("Add", use_container_width=True):
+        if st.button("Add", use_container_width=True, key="add_loan_company_button"):
             add_loan_company()
             st.rerun()
-        selected_delete = st.multiselect("Select companies to delete", options=st.session_state.loan_companies)
+        selected_delete = st.multiselect("Select companies to delete", options=st.session_state.loan_companies, key="companies_to_delete_multiselect")
         del_col, reset_col = st.columns(2)
         with del_col:
-            if st.button("Delete Selected", use_container_width=True):
+            if st.button("Delete Selected", use_container_width=True, key="delete_selected_companies_button"):
                 delete_loan_companies(selected_delete)
                 st.rerun()
         with reset_col:
-            if st.button("Reset", use_container_width=True):
+            if st.button("Reset", use_container_width=True, key="reset_loan_companies_button"):
                 st.session_state.loan_companies = DEFAULT_LOAN_COMPANIES.copy()
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
