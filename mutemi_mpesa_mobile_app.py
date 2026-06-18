@@ -719,24 +719,76 @@ def render_professional_summary(analysis):
     total_received = sum(row["Loan Received"] for row in cashflow_rows)
     total_installments = sum(row["Installments Paid"] for row in cashflow_rows)
     net_position = total_received - total_installments
+
+    top_company = "N/A"
+    top_company_paid = 0.0
+    if cashflow_rows:
+        top = max(cashflow_rows, key=lambda row: row.get("Installments Paid", 0.0))
+        top_company = top.get("Loan Company", "N/A")
+        top_company_paid = top.get("Installments Paid", 0.0)
+
+    risk_bg, risk_fg = risk_colors(risk["rating"])
+
     st.markdown(f"""
         <div class="summary-page">
             <h2>MUTEMI M-PESA Statement Analysis Summary</h2>
             <p class="summary-muted">Customer: <b>{html.escape(analysis["customer_name"])}</b></p>
+
+            <div class="summary-grid">
+                <div class="summary-mini-card"><span>Transactions Parsed</span><strong>{len(analysis["transactions"])}</strong></div>
+                <div class="summary-mini-card"><span>Normal Paid In</span><strong>{money(risk["total_paid_in"])}</strong></div>
+                <div class="summary-mini-card"><span>Loan Received</span><strong>{money(total_received)}</strong></div>
+                <div class="summary-mini-card"><span>Installments Paid</span><strong>{money(total_installments)}</strong></div>
+                <div class="summary-mini-card"><span>Net Position</span><strong>{money(net_position)}</strong></div>
+                <div class="summary-mini-card" style="background:{risk_bg}; color:{risk_fg};"><span>Risk Rating</span><strong>{risk["rating"]} ({risk["score"]})</strong></div>
+            </div>
+
             <h3>1. Executive Overview</h3>
-            <ul>
-                <li>Transactions parsed: <b>{len(analysis["transactions"])}</b></li>
-                <li>Normal Paid In total, excluding matched loan companies: <b>{money(risk["total_paid_in"])}</b></li>
-                <li>Estimated loan receipts from matched loan companies: <b>{money(total_received)}</b></li>
-                <li>Estimated installments repaid to matched loan companies: <b>{money(total_installments)}</b></li>
-                <li>Net position, received less repaid: <b>{money(net_position)}</b></li>
-                <li>Customer risk rating: <b>{risk["rating"]} ({risk["score"]})</b>, with loan repayment percentage of <b>{risk["percentage"]:.2f}%</b></li>
-            </ul>
-            <h3>2. Risk Interpretation</h3>
-            <p>The risk score is based on the ratio of matched-loan installment payments to the main Paid In total.
-            A higher percentage indicates greater loan pressure relative to regular incoming cashflow.</p>
+            <p>
+                The statement shows <b>{money(risk["total_paid_in"])}</b> in normal Paid In cashflow after excluding incoming
+                rows that matched the listed loan companies. Matched loan-company activity shows estimated loan receipts of
+                <b>{money(total_received)}</b> and installment repayments of <b>{money(total_installments)}</b>.
+                This gives a net loan position of <b>{money(net_position)}</b>.
+            </p>
+
+            <h3>2. Loan Pressure and Risk Interpretation</h3>
+            <p>
+                The customer risk rating is <b style="color:{risk_fg};">{risk["rating"]} ({risk["score"]})</b>.
+                The loan repayment percentage is <b>{risk["percentage"]:.2f}%</b>. This percentage compares matched-loan
+                installment payments against the normal Paid In total. A higher percentage suggests stronger repayment
+                pressure relative to regular incoming cashflow.
+            </p>
+
+            <h3>3. Main Matched Loan Company</h3>
+            <p>
+                The highest installment amount detected is linked to <b>{html.escape(top_company)}</b>, with total installments
+                of <b>{money(top_company_paid)}</b>. Use the <b>Selected Company Analysis</b> tab to view transaction-level
+                movement for each matched lender.
+            </p>
         </div>
         """, unsafe_allow_html=True)
+
+    if cashflow_rows:
+        st.markdown("#### Loan Company Cashflow Summary")
+        df = pd.DataFrame(cashflow_rows)
+        for col in ["Loan Received", "Installments Paid", "Net Position"]:
+            df[col] = df[col].map(money)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    monthly_rows = []
+    for month in sorted(analysis["monthly"].keys()):
+        values = analysis["monthly"][month]
+        monthly_rows.append({
+            "Month": month,
+            "Paid In Excluding Matches": money(values["paid_in_excluding_matches"]),
+            "Counted Rows": values["counted_paid_in_rows"],
+            "Paid In Excluded": money(values["paid_in_excluded_matched"]),
+            "Excluded Rows": values["excluded_paid_in_rows"],
+        })
+
+    if monthly_rows:
+        st.markdown("#### Monthly Paid In Summary")
+        st.dataframe(pd.DataFrame(monthly_rows), use_container_width=True, hide_index=True)
 
 
 def render_css():
@@ -751,7 +803,6 @@ def render_css():
             .statement-bar { background: white; border: 1px solid #CBD5E1; min-height: 58px; padding: 13px 16px; display: flex; align-items: center; margin-bottom: 12px; }
             .statement-title { font-weight: 800; margin-right: 18px; white-space: nowrap; }
             .statement-file { color: #334155; font-size: 0.9rem; word-break: break-all; }
-            .left-panel { background: white; border: 1px solid #CBD5E1; padding: 14px 14px; min-height: 650px; }
             .left-title { font-size: 1.22rem; font-weight: 800; color: #0F2B46; margin: 0 0 10px 0; }
             .left-help { color: #475569; font-size: 0.86rem; line-height: 1.35; margin-bottom: 10px; }
             .uploaded-file-box, .upload-placeholder { background: #F8FAFC; border: 1px solid #D6DEE8; border-radius: 7px; padding: 10px; margin: 8px 0 12px 0; display: flex; align-items: center; gap: 10px; }
@@ -763,7 +814,7 @@ def render_css():
             .password-box { background: #F8FAFC; border: 1px solid #CBD5E1; padding: 12px; margin-bottom: 16px; }
             .password-title { font-weight: 800; color: #0F172A; margin-bottom: 5px; }
             .password-file { color: #475569; font-size: 0.82rem; word-break: break-all; margin-bottom: 8px; }
-            .loan-list-box { border: 1px solid #94A3B8; background: #F8FAFC; height: 430px; overflow-y: auto; margin: 10px 0 10px 0; }
+            .loan-list-box { border: 1px solid #94A3B8; background: #F8FAFC; height: 305px; overflow-y: auto; margin: 10px 0 10px 0; }
             .loan-item { padding: 3px 7px; color: #0F172A; font-size: 0.9rem; line-height: 1.25; }
             .loan-item:hover { background: #E2E8F0; }
             .metric-card { border: 1px solid #C5CFDD; min-height: 88px; padding: 15px 17px; margin-bottom: 12px; }
@@ -778,15 +829,20 @@ def render_css():
             .stButton button[kind="primary"] { background:#16A34A !important; color:white !important; border:1px solid #16A34A !important; border-radius:0 !important; font-weight:800 !important; min-height:42px; }
             .stButton button[kind="primary"]:hover { background:#15803D !important; color:white !important; border-color:#15803D !important; }
             .stButton > button, .stDownloadButton > button { border-radius:0 !important; font-weight:700 !important; min-height:40px; }
-            .summary-page { background: white; border: 1px solid #CBD5E1; padding: 22px 26px; line-height: 1.55; }
+            .summary-page { background: white; border: 1px solid #CBD5E1; padding: 28px 30px; line-height: 1.58; margin-bottom: 14px; }
             .summary-page h2 { color: #052E16; margin-top: 0; }
-            .summary-page h3 { color: #0F172A; margin-top: 22px; font-weight: 900; }
+            .summary-page h3 { color: #0F172A; margin-top: 24px; font-weight: 900; }
+            .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 10px; margin: 18px 0 18px 0; }
+            .summary-mini-card { border:1px solid #CBD5E1; background:#F8FAFC; padding:12px 14px; }
+            .summary-mini-card span { display:block; color:#475569; font-size:0.82rem; font-weight:700; margin-bottom:5px; }
+            .summary-mini-card strong { display:block; color:inherit; font-size:1.08rem; font-weight:900; }
             .summary-muted { color: #475569; }
             @media (max-width: 900px) {
                 .loan-list-box { height: 240px; }
                 .left-panel { min-height: auto; }
                 .app-header h1 { font-size: 1.35rem; }
                 .metric-value { font-size: 1.2rem; }
+                .summary-grid { grid-template-columns: 1fr; }
             }
         </style>
         """, unsafe_allow_html=True)
@@ -827,7 +883,6 @@ def main():
     left_col, right_col = st.columns([1.05, 4.0], gap="small")
 
     with left_col:
-        st.markdown('<div class="left-panel">', unsafe_allow_html=True)
         st.markdown('<div class="left-title">Statement Upload</div>', unsafe_allow_html=True)
         st.caption("Upload M-PESA PDF statement")
         uploaded = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"], label_visibility="collapsed", key="statement_pdf_uploader")
@@ -874,7 +929,6 @@ def main():
             if st.button("Reset", use_container_width=True, key="reset_companies_button"):
                 st.session_state.loan_companies = DEFAULT_LOAN_COMPANIES.copy()
                 st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
     should_analyze = analyze_top or analyze_left
     if should_analyze:
@@ -1052,8 +1106,6 @@ def main():
         with tab7:
             st.download_button("Download Summary TXT", data=analysis["report"].encode("utf-8"), file_name="mutemi_mpesa_analysis_summary.txt", mime="text/plain", use_container_width=False, key="download_summary_button")
             render_professional_summary(analysis)
-            with st.expander("View raw text summary"):
-                st.code(analysis["report"], language="text")
 
 
 if __name__ == "__main__":
