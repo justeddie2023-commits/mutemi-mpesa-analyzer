@@ -729,44 +729,44 @@ def render_professional_summary(analysis):
 
     risk_bg, risk_fg = risk_colors(risk["rating"])
 
-    st.markdown(f"""
-        <div class="summary-page">
-            <h2>MUTEMI M-PESA Statement Analysis Summary</h2>
-            <p class="summary-muted">Customer: <b>{html.escape(analysis["customer_name"])}</b></p>
+    summary_html = f"""<div class="summary-page">
+<h2>MUTEMI M-PESA Statement Analysis Summary</h2>
+<p class="summary-muted">Customer: <b>{html.escape(analysis["customer_name"])}</b></p>
 
-            <div class="summary-grid">
-                <div class="summary-mini-card"><span>Transactions Parsed</span><strong>{len(analysis["transactions"])}</strong></div>
-                <div class="summary-mini-card"><span>Normal Paid In</span><strong>{money(risk["total_paid_in"])}</strong></div>
-                <div class="summary-mini-card"><span>Loan Received</span><strong>{money(total_received)}</strong></div>
-                <div class="summary-mini-card"><span>Installments Paid</span><strong>{money(total_installments)}</strong></div>
-                <div class="summary-mini-card"><span>Net Position</span><strong>{money(net_position)}</strong></div>
-                <div class="summary-mini-card" style="background:{risk_bg}; color:{risk_fg};"><span>Risk Rating</span><strong>{risk["rating"]} ({risk["score"]})</strong></div>
-            </div>
+<div class="summary-grid">
+    <div class="summary-mini-card"><span>Transactions Parsed</span><strong>{len(analysis["transactions"])}</strong></div>
+    <div class="summary-mini-card"><span>Normal Paid In</span><strong>{money(risk["total_paid_in"])}</strong></div>
+    <div class="summary-mini-card"><span>Loan Received</span><strong>{money(total_received)}</strong></div>
+    <div class="summary-mini-card"><span>Installments Paid</span><strong>{money(total_installments)}</strong></div>
+    <div class="summary-mini-card"><span>Net Position</span><strong>{money(net_position)}</strong></div>
+    <div class="summary-mini-card" style="background:{risk_bg}; color:{risk_fg};"><span>Risk Rating</span><strong>{risk["rating"]} ({risk["score"]})</strong></div>
+</div>
 
-            <h3>1. Executive Overview</h3>
-            <p>
-                The statement shows <b>{money(risk["total_paid_in"])}</b> in normal Paid In cashflow after excluding incoming
-                rows that matched the listed loan companies. Matched loan-company activity shows estimated loan receipts of
-                <b>{money(total_received)}</b> and installment repayments of <b>{money(total_installments)}</b>.
-                This gives a net loan position of <b>{money(net_position)}</b>.
-            </p>
+<h3>1. Executive Overview</h3>
+<p>
+The statement shows <b>{money(risk["total_paid_in"])}</b> in normal Paid In cashflow after excluding incoming
+rows that matched the listed loan companies. Matched loan-company activity shows estimated loan receipts of
+<b>{money(total_received)}</b> and installment repayments of <b>{money(total_installments)}</b>.
+This gives a net loan position of <b>{money(net_position)}</b>.
+</p>
 
-            <h3>2. Loan Pressure and Risk Interpretation</h3>
-            <p>
-                The customer risk rating is <b style="color:{risk_fg};">{risk["rating"]} ({risk["score"]})</b>.
-                The loan repayment percentage is <b>{risk["percentage"]:.2f}%</b>. This percentage compares matched-loan
-                installment payments against the normal Paid In total. A higher percentage suggests stronger repayment
-                pressure relative to regular incoming cashflow.
-            </p>
+<h3>2. Loan Pressure and Risk Interpretation</h3>
+<p>
+The customer risk rating is <b style="color:{risk_fg};">{risk["rating"]} ({risk["score"]})</b>.
+The loan repayment percentage is <b>{risk["percentage"]:.2f}%</b>. This percentage compares matched-loan
+installment payments against the normal Paid In total. A higher percentage suggests stronger repayment
+pressure relative to regular incoming cashflow.
+</p>
 
-            <h3>3. Main Matched Loan Company</h3>
-            <p>
-                The highest installment amount detected is linked to <b>{html.escape(top_company)}</b>, with total installments
-                of <b>{money(top_company_paid)}</b>. Use the <b>Selected Company Analysis</b> tab to view transaction-level
-                movement for each matched lender.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+<h3>3. Main Matched Loan Company</h3>
+<p>
+The highest installment amount detected is linked to <b>{html.escape(top_company)}</b>, with total installments
+of <b>{money(top_company_paid)}</b>. Use the <b>Selected Company Analysis</b> tab to view transaction-level
+movement for each matched lender.
+</p>
+</div>"""
+
+    st.markdown(summary_html, unsafe_allow_html=True)
 
     if cashflow_rows:
         st.markdown("#### Loan Company Cashflow Summary")
