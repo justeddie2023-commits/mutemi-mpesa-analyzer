@@ -1,35 +1,67 @@
-# MUTEMI M-PESA Mobile Statement Analyzer
+# MUTEMI M-PESA Statement Analyzer - Professional Desktop App
 #
-# Mobile-friendly version of the desktop app.
+# What this app does:
+# 1. Opens an M-PESA PDF statement using a file picker.
+# 2. Requests the PDF password only if the PDF is protected.
+# 3. Searches for selected loan company names/phrases.
+# 4. Lets you add or delete loan companies inside the app.
+# 5. Shows matched loan companies with page numbers.
+# 6. Shows monthly Paid In totals excluding matched loan companies.
+# 7. Shows ELLEGANT CREDIT LTD payment summary by month.
+# 8. Shows customer risk profile based on loan repayments versus Paid In amount.
+# 9. Extracts and displays customer name from the statement.
+# 10. Adds executive dashboard charts, company-by-company loan analysis, and loan-cycle inference.
+# 11. Lets you save the summary as a TXT file.
 #
-# Install:
-#   python -m pip install streamlit pymupdf pandas
+# Required package:
+#   pip install pymupdf
 #
 # Run:
-#   streamlit run mutemi_mpesa_mobile_app.py --server.address 0.0.0.0
-#
-# Then open on your phone browser:
-#   http://YOUR-COMPUTER-IP:8501
+#   python mutemi_mpesa_statement_app.py
 
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
 from collections import defaultdict
 import re
+import os
 
-import fitz  # PyMuPDF
-import pandas as pd
-import streamlit as st
-
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 APP_TITLE = "MUTEMI M-PESA Statement Analyzer"
 
-DEFAULT_LOAN_COMPANIES = [
-    "premier",
-    "cityfield",
-    "goldstep",
+DEFAULT_SEARCH_TERMS = [
+    "CITYFIED CAPITAL",
+    "GOLDSTEP CAPITAL",
     "fourth generation",
     "newark",
     "ELLEGANT CREDIT LTD",
     "OCL BUSINESS CREDIT LIMITED",
     "ASA LIMITED -GITHUNGURI",
+    "UMOJA UFANISI",
+    "INSPIRE CREDIT",
+    "PEMBENI VENTURES",
+    "SAMAWATI",
+    "SIMPLEPAY",
+    "OYA CREDIT",
+    "TICK CREDIT",
+    "PALLA",
+    "CHEREHANI",
+    "MWENYEJI INVESTMENT",
+    "EDENBRIDGE",
+    "BUSINESS CASH ADVANCE",
+    "SASA PAY",
+    "BIDII CREDIT",
+    "INUKA",
+    "ECLOF",
+    "THIKA FAHALI EDEN INVESTMENT LTD",
+    "PREMIER KENYA",
+    "Premier SuperKwik",
+    
+
 ]
 
 ELLEGANT_TERMS = [
@@ -49,8 +81,21 @@ def clean_text(text):
 def money(value):
     return f"{value:,.2f}"
 
+def format_month_label(month_str):
+    try:
+        return datetime.strptime(month_str, "%Y-%m").strftime("%b %Y")
+    except Exception:
+        return month_str
+
+
+
+def transaction_sort_key(tx):
+    """Safe chronological sort key for statement transactions."""
+    return (tx.get("date", ""), tx.get("time", ""), tx.get("receipt", ""))
+
 
 def parse_amount(text):
+    """Extract the last amount-like value from a table cell."""
     if not text:
         return 0.0
 
@@ -69,20 +114,22 @@ def parse_amount(text):
 
 
 def amount_paid_value(value):
+    """Convert withdrawn values like -9,030.00 into positive amount paid."""
     if value < 0:
         return abs(value)
     return value
 
 
 def keyword_pattern(term):
+    """Flexible case-insensitive pattern. Spaces and hyphens can vary."""
     escaped = re.escape(term.strip())
     escaped = escaped.replace(r"\ ", r"\s+")
     escaped = escaped.replace(r"\-", r"\s*-\s*")
     return re.compile(escaped, re.IGNORECASE)
 
 
-def build_term_patterns(loan_companies):
-    return {term: keyword_pattern(term) for term in loan_companies if term.strip()}
+def build_term_patterns(search_terms):
+    return {term: keyword_pattern(term) for term in search_terms if term.strip()}
 
 
 def term_matches_text(text, patterns):
@@ -90,14 +137,55 @@ def term_matches_text(text, patterns):
 
 
 def is_ellegant_credit_text(text):
+    """
+    Robust ELLEGANT CREDIT matcher.
+
+    Some M-PESA PDF rows are wrapped across two lines. In those rows, PyMuPDF can
+    read the text in this order:
+        ELLEGANT Completed -9,030.00 CREDIT LTD
+    instead of:
+        ELLEGANT CREDIT LTD
+
+    This function prevents such rows from being skipped.
+    """
     text = (text or "").upper()
     text = re.sub(r"[^A-Z0-9]+", " ", text)
     words = set(text.split())
+
     has_name = "ELLEGANT" in words or "ELEGANT" in words
     return has_name and "CREDIT" in words and "LTD" in words
 
 
+def make_text_table(headers, rows):
+    """Create a clean text table with solid separator lines for the report page."""
+    if not rows:
+        return ""
+
+    all_rows = [headers] + rows
+    widths = [max(len(str(row[i])) for row in all_rows) for i in range(len(headers))]
+
+    def fmt(row):
+        return " │ ".join(str(row[i]).ljust(widths[i]) for i in range(len(headers)))
+
+    line = "─┼─".join("─" * width for width in widths)
+
+    output = [fmt(headers), line]
+    for row in rows:
+        output.append(fmt(row))
+
+    return "\n".join(output)
+
+
 def risk_rating_from_percentage(percentage):
+    """
+    Customer risk grading based on loan repayment percentage of total Paid In.
+
+    0% - 10%   = Very Good, score 5
+    11% - 25%  = Good, score 4
+    26% - 50%  = Fair, score 3
+    51% - 75%  = Risky, score 2
+    Above 75%  = Very Risky, score 1
+    """
     if percentage <= 10:
         return "Very Good", 5
     if percentage <= 25:
@@ -109,1186 +197,1826 @@ def risk_rating_from_percentage(percentage):
     return "Very Risky", 1
 
 
-def risk_colors(rating):
-    rating = (rating or "").lower()
-    if rating == "very good":
-        return "#DCFCE7", "#166534"
-    if rating == "good":
-        return "#ECFDF5", "#047857"
-    if rating == "fair":
-        return "#FEF9C3", "#854D0E"
-    if rating == "risky":
-        return "#FFEDD5", "#9A3412"
-    if rating == "very risky":
-        return "#FEE2E2", "#991B1B"
-    return "#E2E8F0", "#334155"
+def extract_customer_name_from_pdf(doc):
+    """Extract customer name from the first page of an M-PESA statement."""
+    if doc is None or doc.page_count == 0:
+        return "N/A"
 
+    page = doc[0]
 
-def make_text_table(headers, rows):
-    """Create a clean text table with solid separator lines."""
-    if not rows:
-        return ""
-
-    all_rows = [headers] + rows
-    widths = [max(len(str(row[i])) for row in all_rows) for i in range(len(headers))]
-
-    def fmt(row):
-        return " │ ".join(str(row[i]).ljust(widths[i]) for i in range(len(headers)))
-
-    line = "─┼─".join("─" * width for width in widths)
-    output = [fmt(headers), line]
-
-    for row in rows:
-        output.append(fmt(row))
-
-    return "\n".join(output)
-
-
-
-def open_pdf_from_bytes(pdf_bytes, password=""):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-    if doc.needs_pass:
-        if not password:
-            doc.close()
-            return None, "password_required"
-
-        if not doc.authenticate(password):
-            doc.close()
-            return None, "wrong_password"
-
-    return doc, None
-
-
-def extract_customer_name(doc):
-    if doc.page_count == 0:
-        return "Not found"
-
-    first_page_text = clean_text(doc[0].get_text("text"))
-
+    # First try normal text extraction. This usually returns:
+    # Customer Name: Mutemi Muusya Mobile Number: ...
+    text = clean_text(page.get_text("text"))
     patterns = [
-        r"Customer\s+Name\s*[:\-]?\s*([A-Za-z][A-Za-z\s.'-]{2,80}?)(?=\s+Mobile\s+Number|\s+Email\s+Address|\s+Statement\s+Period|\s+Request\s+Date|$)",
-        r"Customer\s*[:\-]?\s*([A-Za-z][A-Za-z\s.'-]{2,80}?)(?=\s+Mobile|\s+Email|\s+Statement|$)",
+        r"Customer\s+Name\s*:?\s*(.+?)\s+Mobile\s+Number",
+        r"Customer\s+Name\s*:?\s*(.+?)\s+Email\s+Address",
+        r"Customer\s+Name\s*:?\s*(.+?)\s+Statement\s+Period",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, first_page_text, re.IGNORECASE)
+        match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             name = clean_text(match.group(1))
             if name:
                 return name
 
-    return "Not found"
-
-
-def find_loan_companies_by_page(doc, loan_companies):
-    patterns = build_term_patterns(loan_companies)
-    results = {term: {"count": 0, "pages": set()} for term in loan_companies}
-
-    for page_number, page in enumerate(doc, start=1):
-        text = clean_text(page.get_text("text"))
-
-        for term, pattern in patterns.items():
-            matches = list(pattern.finditer(text))
-            if matches:
-                results[term]["count"] += len(matches)
-                results[term]["pages"].add(page_number)
-
-    return results
-
-
-def detect_column_ranges(words, page_width, page_height):
-    top_words = [w for w in words if w[1] < page_height * 0.35]
-
-    header_targets = {
-        "receipt": ["receipt"],
-        "completion": ["completion"],
-        "details": ["details"],
-        "status": ["transaction"],
-        "paid": ["paid"],
-        "withdrawn": ["withdrawn"],
-        "balance": ["balance"],
-    }
-
-    starts = {}
-
-    for col, options in header_targets.items():
-        candidates = []
-        for w in top_words:
-            word = str(w[4]).strip().lower()
-            if word in options:
-                candidates.append((w[1], w[0]))
-
-        if candidates:
-            candidates.sort()
-            starts[col] = candidates[0][1]
-
-    fallback = {
-        "receipt": page_width * 0.03,
-        "completion": page_width * 0.16,
-        "details": page_width * 0.31,
-        "status": page_width * 0.49,
-        "paid": page_width * 0.63,
-        "withdrawn": page_width * 0.75,
-        "balance": page_width * 0.88,
-    }
-
-    for col, value in fallback.items():
-        starts.setdefault(col, value)
-
-    ordered_cols = ["receipt", "completion", "details", "status", "paid", "withdrawn", "balance"]
-    x = [starts[col] for col in ordered_cols]
-
-    if any(x[i] >= x[i + 1] for i in range(len(x) - 1)):
-        x = [fallback[col] for col in ordered_cols]
-
-    return {
-        "receipt": (0, (x[0] + x[1]) / 2),
-        "completion": ((x[0] + x[1]) / 2, (x[1] + x[2]) / 2),
-        "details": ((x[1] + x[2]) / 2, (x[2] + x[3]) / 2),
-        "status": ((x[2] + x[3]) / 2, (x[3] + x[4]) / 2),
-        "paid": ((x[3] + x[4]) / 2, (x[4] + x[5]) / 2),
-        "withdrawn": ((x[4] + x[5]) / 2, (x[5] + x[6]) / 2),
-        "balance": ((x[5] + x[6]) / 2, page_width + 20),
-    }
-
-
-def cell_text(row_words, x_min, x_max):
-    cell = [w for w in row_words if x_min <= w[0] < x_max]
-    cell.sort(key=lambda w: (round(w[1], 1), w[0]))
-    return clean_text(" ".join(str(w[4]) for w in cell))
-
-
-def parse_transactions_from_page(page, page_number, patterns):
+    # Fallback: use word positions. Find the Customer Name label, then read words
+    # on the same row to the right of the label.
     words = page.get_text("words")
-
     if not words:
-        return []
+        return "N/A"
 
-    page_width = page.rect.width
-    page_height = page.rect.height
-    columns = detect_column_ranges(words, page_width, page_height)
+    sorted_words = sorted(words, key=lambda w: (round(w[1], 1), w[0]))
 
-    completion_x_min, completion_x_max = columns["completion"]
-    row_start_candidates = []
+    for i in range(len(sorted_words) - 1):
+        w1 = str(sorted_words[i][4]).strip().lower().rstrip(":")
+        w2 = str(sorted_words[i + 1][4]).strip().lower().rstrip(":")
 
-    for w in words:
-        word_text = str(w[4]).strip()
-        x0, y0 = w[0], w[1]
+        if w1 == "customer" and w2 == "name":
+            label_y = sorted_words[i][1]
+            label_end_x = sorted_words[i + 1][2]
+            page_width = page.rect.width
 
-        if DATE_RE.fullmatch(word_text) and completion_x_min <= x0 < completion_x_max:
-            row_start_candidates.append(y0)
+            value_words = []
+            for w in sorted_words:
+                word = str(w[4]).strip()
+                if not word:
+                    continue
 
-    row_starts = []
-    for y in sorted(row_start_candidates):
-        if not row_starts or abs(y - row_starts[-1]) > 3:
-            row_starts.append(y)
+                same_row = abs(w[1] - label_y) <= 6
+                to_right = w[0] > label_end_x + 25
+                before_qr_area = w[0] < page_width * 0.75
 
-    transactions = []
+                if same_row and to_right and before_qr_area:
+                    lower = word.lower().rstrip(":")
+                    if lower in {"mobile", "number", "email", "address", "statement", "period", "request", "date"}:
+                        break
+                    value_words.append(word)
 
-    for i, start_y in enumerate(row_starts):
-        end_y = row_starts[i + 1] if i + 1 < len(row_starts) else page_height + 20
+            name = clean_text(" ".join(value_words))
+            if name:
+                return name
 
-        row_words = [w for w in words if start_y - 2 <= w[1] < end_y - 1]
+    return "N/A"
 
-        if not row_words:
-            continue
 
-        row_text = clean_text(
-            " ".join(str(w[4]) for w in sorted(row_words, key=lambda w: (round(w[1], 1), w[0])))
+class PasswordDialog(tk.Toplevel):
+    def __init__(self, parent, filename):
+        super().__init__(parent)
+        self.title("PDF Password Required")
+        self.resizable(False, False)
+        self.configure(bg="#F8FAFC")
+        self.password = None
+
+        self.transient(parent)
+        self.grab_set()
+
+        frame = tk.Frame(self, bg="#F8FAFC", padx=18, pady=18)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="Password Protected Statement",
+            bg="#F8FAFC",
+            fg="#0F172A",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            frame,
+            text=f"File: {Path(filename).name}",
+            bg="#F8FAFC",
+            fg="#475569",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 14))
+
+        tk.Label(
+            frame,
+            text="Enter PDF password:",
+            bg="#F8FAFC",
+            fg="#0F172A",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w")
+
+        self.password_var = tk.StringVar()
+        self.entry = ttk.Entry(frame, textvariable=self.password_var, width=48, show="*")
+        self.entry.pack(fill="x", pady=(5, 8))
+        self.entry.focus()
+
+        self.show_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frame,
+            text="Show password",
+            variable=self.show_var,
+            command=self.toggle_password,
+        ).pack(anchor="w")
+
+        button_frame = tk.Frame(frame, bg="#F8FAFC")
+        button_frame.pack(fill="x", pady=(16, 0))
+
+        ttk.Button(button_frame, text="Cancel", command=self.cancel, style="Secondary.TButton").pack(side="right", padx=(8, 0))
+        ttk.Button(button_frame, text="Open PDF", command=self.ok, style="Primary.TButton").pack(side="right")
+
+        self.bind("<Return>", lambda event: self.ok())
+        self.bind("<Escape>", lambda event: self.cancel())
+
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (self.winfo_width() // 2)
+        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (self.winfo_height() // 2)
+        self.geometry(f"+{x}+{y}")
+
+    def toggle_password(self):
+        self.entry.config(show="" if self.show_var.get() else "*")
+
+    def ok(self):
+        self.password = self.password_var.get()
+        self.destroy()
+
+    def cancel(self):
+        self.password = None
+        self.destroy()
+
+
+class MpesaStatementApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(APP_TITLE)
+        self.root.geometry("1180x780")
+        self.root.minsize(1080, 680)
+        self.root.configure(bg="#F1F5F9")
+
+        self.pdf_path = None
+        self.customer_name = "N/A"
+        self.last_report = ""
+
+        self.search_terms_var = tk.StringVar(value=DEFAULT_SEARCH_TERMS)
+
+        self.configure_styles()
+        self.create_widgets()
+        self.set_risk_rating_display("N/A", "N/A")
+
+        if fitz is None:
+            messagebox.showerror(
+                "Missing package",
+                "PyMuPDF is not installed.\n\nOpen PowerShell and run:\npython -m pip install pymupdf",
+            )
+
+    def configure_styles(self):
+        self.style = ttk.Style()
+
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self.colors = {
+            "bg": "#F1F5F9",
+            "panel": "#FFFFFF",
+            "primary": "#16A34A",
+            "primary_dark": "#15803D",
+            "accent": "#0F766E",
+            "text": "#0F172A",
+            "muted": "#64748B",
+            "border": "#CBD5E1",
+            "header": "#052E16",
+            "soft_green": "#DCFCE7",
+            "soft_blue": "#DBEAFE",
+            "soft_orange": "#FFEDD5",
+        }
+
+        self.style.configure("TFrame", background=self.colors["bg"])
+        self.style.configure("Panel.TFrame", background=self.colors["panel"])
+        self.style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["text"], font=("Segoe UI", 10))
+        self.style.configure("Panel.TLabel", background=self.colors["panel"], foreground=self.colors["text"], font=("Segoe UI", 10))
+
+        self.style.configure(
+            "Primary.TButton",
+            background=self.colors["primary"],
+            foreground="white",
+            font=("Segoe UI", 10, "bold"),
+            padding=(12, 7),
+            borderwidth=0,
+        )
+        self.style.map("Primary.TButton", background=[("active", self.colors["primary_dark"])])
+
+        self.style.configure(
+            "Secondary.TButton",
+            background="#E2E8F0",
+            foreground=self.colors["text"],
+            font=("Segoe UI", 10),
+            padding=(10, 7),
+            borderwidth=0,
+        )
+        self.style.map("Secondary.TButton", background=[("active", "#CBD5E1")])
+
+        self.style.configure(
+            "Danger.TButton",
+            background="#FEE2E2",
+            foreground="#991B1B",
+            font=("Segoe UI", 10),
+            padding=(10, 7),
+            borderwidth=0,
+        )
+        self.style.map("Danger.TButton", background=[("active", "#FECACA")])
+
+        self.style.configure(
+            "Treeview",
+            background="white",
+            fieldbackground="white",
+            foreground=self.colors["text"],
+            rowheight=30,
+            bordercolor=self.colors["border"],
+            borderwidth=1,
+            font=("Segoe UI", 9),
+        )
+        self.style.configure(
+            "Treeview.Heading",
+            background="#E2E8F0",
+            foreground=self.colors["text"],
+            font=("Segoe UI", 9, "bold"),
+            padding=(6, 6),
+        )
+        self.style.map("Treeview", background=[("selected", "#BBF7D0")], foreground=[("selected", "#052E16")])
+
+        self.style.configure("TNotebook", background=self.colors["bg"], borderwidth=0)
+        self.style.configure(
+            "TNotebook.Tab",
+            background="#E2E8F0",
+            foreground=self.colors["text"],
+            padding=(13, 8),
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.style.map("TNotebook.Tab", background=[("selected", "white")], foreground=[("selected", self.colors["primary_dark"])])
+
+    def create_widgets(self):
+        self.create_header()
+
+        main = tk.Frame(self.root, bg=self.colors["bg"], padx=14, pady=14)
+        main.pack(fill="both", expand=True)
+
+        self.create_file_bar(main)
+
+        body = ttk.PanedWindow(main, orient="horizontal")
+        body.pack(fill="both", expand=True, pady=(12, 0))
+
+        left = tk.Frame(body, bg="white", padx=12, pady=12, highlightbackground=self.colors["border"], highlightthickness=1)
+        right = ttk.Frame(body, padding=(12, 0, 0, 0))
+
+        body.add(left, weight=1)
+        body.add(right, weight=4)
+
+        self.create_search_words_panel(left)
+        self.create_results_panel(right)
+        self.create_bottom_bar(main)
+
+    def create_header(self):
+        header = tk.Frame(self.root, bg=self.colors["header"], padx=18, pady=14)
+        header.pack(fill="x")
+
+        title_frame = tk.Frame(header, bg=self.colors["header"])
+        title_frame.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            title_frame,
+            text=APP_TITLE,
+            bg=self.colors["header"],
+            fg="white",
+            font=("Segoe UI", 18, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            title_frame,
+            text="Loan company matching, exclusion analysis, monthly Paid In totals, and ELLEGANT CREDIT payment tracking",
+            bg=self.colors["header"],
+            fg="#BBF7D0",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(3, 0))
+
+        ttk.Button(
+            header,
+            text="Select Statement PDF",
+            command=self.select_pdf,
+            style="Primary.TButton",
+        ).pack(side="right")
+
+        ttk.Button(
+            header,
+            text="Re-analyze",
+            command=self.analyze_pdf,
+            style="Secondary.TButton",
+        ).pack(side="right", padx=(0, 10))
+
+    def create_file_bar(self, parent):
+        bar = tk.Frame(parent, bg="white", padx=14, pady=12, highlightbackground=self.colors["border"], highlightthickness=1)
+        bar.pack(fill="x")
+
+        tk.Label(
+            bar,
+            text="Statement File",
+            bg="white",
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left")
+
+        self.file_label = tk.Label(
+            bar,
+            text="No statement selected.",
+            bg="white",
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        self.file_label.pack(side="left", fill="x", expand=True, padx=(12, 0))
+
+        ttk.Button(
+            bar,
+            text="Re-analyze Statement",
+            command=self.analyze_pdf,
+            style="Primary.TButton",
+        ).pack(side="right", padx=(10, 0))
+
+    def create_search_words_panel(self, parent):
+        tk.Label(parent, text="Loan Companies", bg="white", fg=self.colors["text"], font=("Segoe UI", 13, "bold")).pack(anchor="w")
+
+        tk.Label(
+            parent,
+            text="Rows matching these loan companies are excluded from the main Paid In total. Add or delete loan companies, then click Re-analyze.",
+            bg="white",
+            fg=self.colors["muted"],
+            wraplength=260,
+            justify="left",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(4, 12))
+
+        list_frame = tk.Frame(parent, bg="white")
+        list_frame.pack(fill="both", expand=True)
+
+        self.terms_listbox = tk.Listbox(
+            list_frame,
+            listvariable=self.search_terms_var,
+            height=18,
+            selectmode="extended",
+            relief="flat",
+            bg="#F8FAFC",
+            fg=self.colors["text"],
+            selectbackground="#BBF7D0",
+            selectforeground="#052E16",
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            font=("Segoe UI", 10),
+        )
+        self.terms_listbox.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.terms_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.terms_listbox.config(yscrollcommand=scrollbar.set)
+
+        entry_frame = tk.Frame(parent, bg="white")
+        entry_frame.pack(fill="x", pady=(12, 0))
+
+        self.new_term_var = tk.StringVar()
+        self.new_term_entry = ttk.Entry(entry_frame, textvariable=self.new_term_var)
+        self.new_term_entry.pack(side="left", fill="x", expand=True)
+        self.new_term_entry.bind("<Return>", lambda event: self.add_search_term())
+
+        ttk.Button(entry_frame, text="Add", command=self.add_search_term, style="Primary.TButton").pack(side="left", padx=(8, 0))
+
+        action_frame = tk.Frame(parent, bg="white")
+        action_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Button(action_frame, text="Delete Selected", command=self.delete_selected_terms, style="Danger.TButton").pack(side="left")
+        ttk.Button(action_frame, text="Reset", command=self.reset_default_terms, style="Secondary.TButton").pack(side="left", padx=(8, 0))
+
+    def create_results_panel(self, parent):
+        self.cards_frame = tk.Frame(parent, bg=self.colors["bg"])
+        self.cards_frame.pack(fill="x", pady=(0, 12))
+
+        self.card_values = {}
+        self.create_card("Customer Name", "N/A", "#E0F2FE", "#075985")
+        self.create_card("Transactions Parsed", "0", self.colors["soft_blue"], "#1E3A8A")
+        self.create_card("Monthly Paid In Total", "0.00", self.colors["soft_green"], "#166534")
+        self.create_card("Loan Received", "0.00", "#DFF6FF", "#075985")
+        self.create_card("Installment Paid", "0.00", self.colors["soft_orange"], "#9A3412")
+        self.create_card("Risk Rating", "N/A", "#FEE2E2", "#991B1B")
+
+        notebook = ttk.Notebook(parent)
+        notebook.pack(fill="both", expand=True)
+
+        dashboard_tab = ttk.Frame(notebook, padding=8)
+        matched_tab = ttk.Frame(notebook, padding=8)
+        monthly_tab = ttk.Frame(notebook, padding=8)
+        selected_tab = ttk.Frame(notebook, padding=8)
+        ellegant_tab = ttk.Frame(notebook, padding=8)
+        risk_tab = ttk.Frame(notebook, padding=8)
+        report_tab = ttk.Frame(notebook, padding=8)
+
+        notebook.add(dashboard_tab, text="Executive Dashboard")
+        notebook.add(matched_tab, text="Matched Loan Companies")
+        notebook.add(monthly_tab, text="Monthly Paid In")
+        notebook.add(selected_tab, text="Selected Company Analysis")
+        notebook.add(ellegant_tab, text="ELLEGANT CREDIT Summary")
+        notebook.add(risk_tab, text="Customer Risk Profile")
+        notebook.add(report_tab, text="Full Summary")
+
+        self.create_dashboard_panel(dashboard_tab)
+        self.create_matched_tree(matched_tab)
+        self.create_monthly_tree(monthly_tab)
+        self.create_selected_company_panel(selected_tab)
+        self.create_ellegant_tree(ellegant_tab)
+        self.create_risk_profile_panel(risk_tab)
+        self.create_report_text(report_tab)
+
+    def create_card(self, title, value, bg, fg):
+        card = tk.Frame(self.cards_frame, bg=bg, padx=16, pady=12, highlightbackground=self.colors["border"], highlightthickness=1)
+        card.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        tk.Label(card, text=title, bg=bg, fg=fg, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        value_label = tk.Label(card, text=value, bg=bg, fg=fg, font=("Segoe UI", 18, "bold"))
+        value_label.pack(anchor="w", pady=(4, 0))
+
+        self.card_values[title] = value_label
+
+    def create_dashboard_panel(self, parent):
+        container = tk.Frame(parent, bg="white", padx=12, pady=10)
+        container.pack(fill="both", expand=True)
+
+        tk.Label(container, text="Executive Visual Dashboard", bg="white", fg=self.colors["text"], font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        tk.Label(
+            container,
+            text="This dashboard compares customer income, loan disbursements received, and installments repaid to matched loan companies.",
+            bg="white", fg=self.colors["muted"], font=("Segoe UI", 9), wraplength=980, justify="left"
+        ).pack(anchor="w", pady=(3, 10))
+
+        chart_frame = tk.Frame(container, bg="white")
+        chart_frame.pack(fill="both", expand=True)
+
+        left = tk.Frame(chart_frame, bg="white")
+        right = tk.Frame(chart_frame, bg="white")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        self.monthly_chart_canvas = tk.Canvas(left, height=340, bg="#FFFFFF", highlightbackground=self.colors["border"], highlightthickness=1)
+        self.monthly_chart_canvas.pack(fill="both", expand=True)
+
+        self.company_chart_canvas = tk.Canvas(right, height=340, bg="#FFFFFF", highlightbackground=self.colors["border"], highlightthickness=1)
+        self.company_chart_canvas.pack(fill="both", expand=True)
+
+        summary_frame = tk.Frame(container, bg="white")
+        summary_frame.pack(fill="both", expand=True, pady=(12, 0))
+
+        self.company_summary_tree = ttk.Treeview(summary_frame, columns=("company", "received", "installments", "net", "txns"), show="headings", height=8)
+        self.company_summary_tree.heading("company", text="Loan Company")
+        self.company_summary_tree.heading("received", text="Loan Received")
+        self.company_summary_tree.heading("installments", text="Installments Paid")
+        self.company_summary_tree.heading("net", text="Net Position")
+        self.company_summary_tree.heading("txns", text="Matched Txns")
+        self.company_summary_tree.column("company", width=280, anchor="w")
+        self.company_summary_tree.column("received", width=140, anchor="e")
+        self.company_summary_tree.column("installments", width=150, anchor="e")
+        self.company_summary_tree.column("net", width=140, anchor="e")
+        self.company_summary_tree.column("txns", width=110, anchor="center")
+        self.company_summary_tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(summary_frame, orient="vertical", command=self.company_summary_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.company_summary_tree.configure(yscrollcommand=scroll.set)
+
+    def create_selected_company_panel(self, parent):
+        container = tk.Frame(parent, bg="white", padx=12, pady=10)
+        container.pack(fill="both", expand=True)
+
+        header = tk.Frame(container, bg="white")
+        header.pack(fill="x", pady=(0, 10))
+        tk.Label(header, text="Selected Loan Company Summary", bg="white", fg=self.colors["text"], font=("Segoe UI", 13, "bold")).pack(side="left")
+
+        self.selected_company_var = tk.StringVar(value="")
+        self.selected_company_combo = ttk.Combobox(header, textvariable=self.selected_company_var, state="readonly", width=36)
+        self.selected_company_combo.pack(side="left", padx=(16, 8))
+        self.selected_company_combo.bind("<<ComboboxSelected>>", lambda event: self.update_selected_company_view())
+        ttk.Button(header, text="View Summary", command=self.update_selected_company_view, style="Primary.TButton").pack(side="left")
+
+        self.selected_company_totals = tk.Frame(container, bg="#F8FAFC", padx=12, pady=10, highlightbackground=self.colors["border"], highlightthickness=1)
+        self.selected_company_totals.pack(fill="x", pady=(0, 10))
+        self.selected_received_var = tk.StringVar(value="0.00")
+        self.selected_paid_var = tk.StringVar(value="0.00")
+        self.selected_net_var = tk.StringVar(value="0.00")
+        self.selected_count_var = tk.StringVar(value="0")
+
+        for label, var in [("Loan Received", self.selected_received_var), ("Installments Paid", self.selected_paid_var), ("Net Position", self.selected_net_var), ("Matched Transactions", self.selected_count_var)]:
+            block = tk.Frame(self.selected_company_totals, bg="#F8FAFC")
+            block.pack(side="left", fill="x", expand=True, padx=(0, 10))
+            tk.Label(block, text=label, bg="#F8FAFC", fg=self.colors["muted"], font=("Segoe UI", 8, "bold")).pack(anchor="w")
+            tk.Label(block, textvariable=var, bg="#F8FAFC", fg=self.colors["text"], font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(3, 0))
+
+        paned = ttk.PanedWindow(container, orient="vertical")
+        paned.pack(fill="both", expand=True)
+        tx_frame = tk.Frame(paned, bg="white")
+        cycle_frame = tk.Frame(paned, bg="white")
+        paned.add(tx_frame, weight=2)
+        paned.add(cycle_frame, weight=1)
+
+        tk.Label(tx_frame, text="Transactions for Selected Company", bg="white", fg=self.colors["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 5))
+        self.selected_company_tree = ttk.Treeview(tx_frame, columns=("date", "type", "receipt", "received", "paid", "page"), show="headings", height=8)
+        for col, title, width, anchor in [("date", "Date", 120, "center"), ("type", "Type", 140, "center"), ("receipt", "Receipt No.", 220, "w"), ("received", "Loan Received", 140, "e"), ("paid", "Installment Paid", 140, "e"), ("page", "Page", 70, "center")]:
+            self.selected_company_tree.heading(col, text=title)
+            self.selected_company_tree.column(col, width=width, anchor=anchor)
+        self.selected_company_tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(tx_frame, orient="vertical", command=self.selected_company_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.selected_company_tree.configure(yscrollcommand=scroll.set)
+
+        tk.Label(cycle_frame, text="Inferred Loan Cycles", bg="white", fg=self.colors["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 5))
+        self.loan_cycle_tree = ttk.Treeview(cycle_frame, columns=("company", "cycle", "loan_date", "received", "installments", "count", "net"), show="headings", height=5)
+        for col, title, width, anchor in [("company", "Loan Company", 220, "w"), ("cycle", "Cycle", 70, "center"), ("loan_date", "Loan Date", 130, "center"), ("received", "Loan Received", 130, "e"), ("installments", "Installments Paid", 140, "e"), ("count", "No. of Installments", 130, "center"), ("net", "Net Position", 130, "e")]:
+            self.loan_cycle_tree.heading(col, text=title)
+            self.loan_cycle_tree.column(col, width=width, anchor=anchor)
+        self.loan_cycle_tree.pack(side="left", fill="both", expand=True)
+        scroll2 = ttk.Scrollbar(cycle_frame, orient="vertical", command=self.loan_cycle_tree.yview)
+        scroll2.pack(side="right", fill="y")
+        self.loan_cycle_tree.configure(yscrollcommand=scroll2.set)
+
+    def create_matched_tree(self, parent):
+        self.matched_tree = ttk.Treeview(parent, columns=("term", "count", "pages"), show="headings")
+        self.matched_tree.heading("term", text="Loan Company")
+        self.matched_tree.heading("count", text="Total Matches")
+        self.matched_tree.heading("pages", text="Page Number(s)")
+
+        self.matched_tree.column("term", width=320, anchor="w")
+        self.matched_tree.column("count", width=120, anchor="center")
+        self.matched_tree.column("pages", width=320, anchor="w")
+
+        self.matched_tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(parent, orient="vertical", command=self.matched_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.matched_tree.configure(yscrollcommand=scroll.set)
+
+    def create_monthly_tree(self, parent):
+        self.monthly_tree = ttk.Treeview(
+            parent,
+            columns=("month", "paid_excluding", "counted_rows", "paid_excluded", "excluded_rows"),
+            show="headings",
+        )
+        self.monthly_tree.heading("month", text="Month")
+        self.monthly_tree.heading("paid_excluding", text="Paid In Excluding Matches")
+        self.monthly_tree.heading("counted_rows", text="Counted Rows")
+        self.monthly_tree.heading("paid_excluded", text="Paid In Excluded")
+        self.monthly_tree.heading("excluded_rows", text="Excluded Rows")
+
+        self.monthly_tree.column("month", width=100, anchor="center")
+        self.monthly_tree.column("paid_excluding", width=210, anchor="e")
+        self.monthly_tree.column("counted_rows", width=120, anchor="center")
+        self.monthly_tree.column("paid_excluded", width=170, anchor="e")
+        self.monthly_tree.column("excluded_rows", width=120, anchor="center")
+
+        self.monthly_tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(parent, orient="vertical", command=self.monthly_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.monthly_tree.configure(yscrollcommand=scroll.set)
+
+    def create_ellegant_tree(self, parent):
+        intro = tk.Frame(parent, bg="white", padx=10, pady=8)
+        intro.pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            intro,
+            text="ELLEGANT CREDIT LTD Payment Summary",
+            bg="white",
+            fg=self.colors["text"],
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            intro,
+            text="This block lists each ELLEGANT CREDIT transaction by month, including date paid, receipt number, and amount paid.",
+            bg="white",
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.ellegant_tree = ttk.Treeview(
+            parent,
+            columns=("month", "date", "receipt", "amount", "page"),
+            show="headings",
+        )
+        self.ellegant_tree.heading("month", text="Month")
+        self.ellegant_tree.heading("date", text="Date Paid")
+        self.ellegant_tree.heading("receipt", text="Transaction ID / Receipt No.")
+        self.ellegant_tree.heading("amount", text="Amount Paid")
+        self.ellegant_tree.heading("page", text="Page")
+
+        self.ellegant_tree.column("month", width=90, anchor="center")
+        self.ellegant_tree.column("date", width=120, anchor="center")
+        self.ellegant_tree.column("receipt", width=230, anchor="w")
+        self.ellegant_tree.column("amount", width=140, anchor="e")
+        self.ellegant_tree.column("page", width=70, anchor="center")
+
+        self.ellegant_tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(parent, orient="vertical", command=self.ellegant_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.ellegant_tree.configure(yscrollcommand=scroll.set)
+
+    def create_risk_profile_panel(self, parent):
+        container = tk.Frame(parent, bg="white", padx=14, pady=12)
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text="Customer Risk Profile",
+            bg="white",
+            fg=self.colors["text"],
+            font=("Segoe UI", 13, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            container,
+            text="Risk is calculated as: Total repayment to matched loan companies ÷ Total Paid In amount × 100.",
+            bg="white",
+            fg=self.colors["muted"],
+            font=("Segoe UI", 9),
+            wraplength=820,
+            justify="left"
+        ).pack(anchor="w", pady=(3, 12))
+
+        self.risk_summary_frame = tk.Frame(container, bg="#F8FAFC", padx=12, pady=10, highlightbackground=self.colors["border"], highlightthickness=1)
+        self.risk_summary_frame.pack(fill="x", pady=(0, 12))
+
+        self.risk_total_paid_in_var = tk.StringVar(value="0.00")
+        self.risk_total_loan_var = tk.StringVar(value="0.00")
+        self.risk_percentage_var = tk.StringVar(value="0.00%")
+        self.risk_rating_var = tk.StringVar(value="N/A")
+        self.risk_score_var = tk.StringVar(value="N/A")
+
+        fields = [
+            ("Total Paid In", self.risk_total_paid_in_var),
+            ("Total Loan Repayment", self.risk_total_loan_var),
+            ("Loan % of Paid In", self.risk_percentage_var),
+            ("Risk Rating", self.risk_rating_var),
+            ("Score", self.risk_score_var),
+        ]
+
+        for label, variable in fields:
+            block = tk.Frame(self.risk_summary_frame, bg="#F8FAFC")
+            block.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+            tk.Label(block, text=label, bg="#F8FAFC", fg=self.colors["muted"], font=("Segoe UI", 8, "bold")).pack(anchor="w")
+            value_label = tk.Label(block, textvariable=variable, bg="#F8FAFC", fg=self.colors["text"], font=("Segoe UI", 14, "bold"))
+            value_label.pack(anchor="w", pady=(3, 0))
+
+            if label == "Risk Rating":
+                self.risk_rating_value_label = value_label
+            elif label == "Score":
+                self.risk_score_value_label = value_label
+
+        rating_frame = tk.Frame(container, bg="white")
+        rating_frame.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            rating_frame,
+            text="Risk Rating Guide",
+            bg="white",
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        self.risk_guide_tree = ttk.Treeview(
+            rating_frame,
+            columns=("range", "rating", "score"),
+            show="headings",
+            height=5
+        )
+        self.risk_guide_tree.heading("range", text="Loan Percentage of Total Amount")
+        self.risk_guide_tree.heading("rating", text="Risk Rating")
+        self.risk_guide_tree.heading("score", text="Score")
+
+        self.risk_guide_tree.column("range", width=280, anchor="center")
+        self.risk_guide_tree.column("rating", width=180, anchor="center")
+        self.risk_guide_tree.column("score", width=100, anchor="center")
+
+        self.risk_guide_tree.pack(fill="x")
+
+        guide_rows = [
+            ("0% - 10%", "Very Good", "5"),
+            ("11% - 25%", "Good", "4"),
+            ("26% - 50%", "Fair", "3"),
+            ("51% - 75%", "Risky", "2"),
+            ("Above 75%", "Very Risky", "1"),
+        ]
+
+        for row in guide_rows:
+            self.risk_guide_tree.insert("", "end", values=row)
+
+        tk.Label(
+            container,
+            text="Loan Repayments Detected from Matched Loan Companies",
+            bg="white",
+            fg=self.colors["text"],
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(8, 5))
+
+        repayment_frame = tk.Frame(container, bg="white")
+        repayment_frame.pack(fill="both", expand=True)
+
+        self.loan_repayment_tree = ttk.Treeview(
+            repayment_frame,
+            columns=("month", "date", "company", "receipt", "amount", "page"),
+            show="headings"
         )
 
-        dt_match = DATETIME_RE.search(row_text)
+        self.loan_repayment_tree.heading("month", text="Month")
+        self.loan_repayment_tree.heading("date", text="Date Paid")
+        self.loan_repayment_tree.heading("company", text="Loan Company")
+        self.loan_repayment_tree.heading("receipt", text="Transaction ID / Receipt No.")
+        self.loan_repayment_tree.heading("amount", text="Amount Paid")
+        self.loan_repayment_tree.heading("page", text="Page")
 
-        if not dt_match:
-            date_match = DATE_RE.search(row_text)
-            if not date_match:
+        self.loan_repayment_tree.column("month", width=90, anchor="center")
+        self.loan_repayment_tree.column("date", width=110, anchor="center")
+        self.loan_repayment_tree.column("company", width=240, anchor="w")
+        self.loan_repayment_tree.column("receipt", width=210, anchor="w")
+        self.loan_repayment_tree.column("amount", width=130, anchor="e")
+        self.loan_repayment_tree.column("page", width=70, anchor="center")
+
+        self.loan_repayment_tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(repayment_frame, orient="vertical", command=self.loan_repayment_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.loan_repayment_tree.configure(yscrollcommand=scroll.set)
+
+    def create_report_text(self, parent):
+        wrapper = tk.Frame(parent, bg=self.colors["bg"])
+        wrapper.pack(fill="both", expand=True)
+
+        header = tk.Frame(wrapper, bg="#F8FAFC", highlightbackground=self.colors["border"], highlightthickness=1, padx=16, pady=14)
+        header.pack(fill="x", padx=8, pady=(8, 0))
+
+        tk.Label(header, text="Professional Summary Page", bg="#F8FAFC", fg=self.colors["text"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
+        tk.Label(
+            header,
+            text="A cleaner executive report with section headings, decision-ready highlights, and a readable narrative summary.",
+            bg="#F8FAFC", fg=self.colors["muted"], font=("Segoe UI", 9), justify="left"
+        ).pack(anchor="w", pady=(4, 0))
+
+        text_holder = tk.Frame(wrapper, bg=self.colors["bg"])
+        text_holder.pack(fill="both", expand=True, padx=8, pady=(8, 8))
+
+        self.report_text = tk.Text(
+            text_holder,
+            wrap="word",
+            font=("Segoe UI", 10),
+            bg="white",
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            relief="flat",
+            padx=18,
+            pady=18,
+            spacing1=3,
+            spacing2=2,
+            spacing3=5,
+        )
+        self.report_text.pack(side="left", fill="both", expand=True)
+
+        yscroll = ttk.Scrollbar(text_holder, orient="vertical", command=self.report_text.yview)
+        yscroll.pack(side="right", fill="y")
+        self.report_text.config(yscrollcommand=yscroll.set)
+
+        # Text styles for professional summary display
+        self.report_text.tag_configure("title", font=("Segoe UI", 18, "bold"), foreground="#052E16", spacing3=10)
+        self.report_text.tag_configure("subtitle", font=("Segoe UI", 10), foreground="#64748B", spacing3=14)
+        self.report_text.tag_configure("section", font=("Segoe UI", 13, "bold"), foreground="#0F172A", spacing1=10, spacing3=7)
+        self.report_text.tag_configure("subsection", font=("Segoe UI", 12, "bold"), foreground="#166534", spacing1=8, spacing3=5)
+        self.report_text.tag_configure("body", font=("Segoe UI", 10), foreground="#0F172A", lmargin1=2, lmargin2=2)
+        self.report_text.tag_configure("muted", font=("Segoe UI", 10), foreground="#475569")
+        self.report_text.tag_configure("bullet", font=("Segoe UI", 10), foreground="#0F172A", lmargin1=18, lmargin2=32, spacing1=2, spacing3=2)
+        self.report_text.tag_configure("metric", font=("Segoe UI", 10, "bold"), foreground="#9A3412")
+        self.report_text.tag_configure("good", font=("Segoe UI", 10, "bold"), foreground="#166534")
+        self.report_text.tag_configure("warning", font=("Segoe UI", 10, "bold"), foreground="#92400E")
+        self.report_text.tag_configure("bad", font=("Segoe UI", 10, "bold"), foreground="#B91C1C")
+        self.report_text.tag_configure("tablehead", font=("Consolas", 10, "bold"), foreground="#0F172A")
+        self.report_text.tag_configure("table", font=("Consolas", 10), foreground="#1E293B")
+
+    def create_bottom_bar(self, parent):
+        bottom = tk.Frame(parent, bg=self.colors["bg"])
+        bottom.pack(fill="x", pady=(12, 0))
+
+        ttk.Button(bottom, text="Analyze / Re-analyze", command=self.analyze_pdf, style="Primary.TButton").pack(side="left")
+        ttk.Button(bottom, text="Save Summary TXT", command=self.save_summary, style="Secondary.TButton").pack(side="left", padx=(8, 0))
+        ttk.Button(bottom, text="Clear Results", command=self.clear_results, style="Secondary.TButton").pack(side="left", padx=(8, 0))
+
+        self.status_label = tk.Label(bottom, text="Ready.", bg=self.colors["bg"], fg=self.colors["muted"], font=("Segoe UI", 9))
+        self.status_label.pack(side="right")
+
+    def get_search_terms(self):
+        terms = list(self.terms_listbox.get(0, tk.END))
+        return [term.strip() for term in terms if term.strip()]
+
+    def add_search_term(self):
+        term = self.new_term_var.get().strip()
+
+        if not term:
+            return
+
+        existing = [t.lower() for t in self.get_search_terms()]
+        if term.lower() in existing:
+            messagebox.showinfo("Duplicate", "This loan company already exists.")
+            return
+
+        self.terms_listbox.insert(tk.END, term)
+        self.new_term_var.set("")
+
+    def delete_selected_terms(self):
+        selected = list(self.terms_listbox.curselection())
+
+        if not selected:
+            messagebox.showinfo("No selection", "Select one or more loan companies to delete.")
+            return
+
+        for index in reversed(selected):
+            self.terms_listbox.delete(index)
+
+    def reset_default_terms(self):
+        self.search_terms_var.set(DEFAULT_SEARCH_TERMS)
+
+    def select_pdf(self):
+        path = filedialog.askopenfilename(
+            title="Select M-PESA Statement PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+
+        if not path:
+            return
+
+        self.pdf_path = path
+        self.file_label.config(text=path, fg=self.colors["text"])
+
+        self.analyze_pdf()
+
+    def open_pdf(self, pdf_path):
+        if fitz is None:
+            raise RuntimeError("PyMuPDF is not installed. Run: python -m pip install pymupdf")
+
+        doc = fitz.open(pdf_path)
+
+        if doc.needs_pass:
+            for _ in range(3):
+                dialog = PasswordDialog(self.root, pdf_path)
+                self.root.wait_window(dialog)
+
+                if dialog.password is None:
+                    doc.close()
+                    return None
+
+                if doc.authenticate(dialog.password):
+                    return doc
+
+                messagebox.showerror("Wrong password", "Wrong password or PDF could not be unlocked.")
+
+            doc.close()
+            messagebox.showerror("Failed", "Failed after 3 password attempts.")
+            return None
+
+        return doc
+
+    def find_search_terms_by_page(self, doc, search_terms):
+        patterns = build_term_patterns(search_terms)
+        results = {term: {"count": 0, "pages": set()} for term in search_terms}
+
+        for page_number, page in enumerate(doc, start=1):
+            text = clean_text(page.get_text("text"))
+
+            for term, pattern in patterns.items():
+                matches = list(pattern.finditer(text))
+                if matches:
+                    results[term]["count"] += len(matches)
+                    results[term]["pages"].add(page_number)
+
+        return results
+
+    def detect_column_ranges(self, words, page_width, page_height):
+        top_words = [w for w in words if w[1] < page_height * 0.35]
+
+        header_targets = {
+            "receipt": ["receipt"],
+            "completion": ["completion"],
+            "details": ["details"],
+            "status": ["transaction"],
+            "paid": ["paid"],
+            "withdrawn": ["withdrawn"],
+            "balance": ["balance"],
+        }
+
+        starts = {}
+
+        for col, options in header_targets.items():
+            candidates = []
+            for w in top_words:
+                word = str(w[4]).strip().lower()
+                if word in options:
+                    candidates.append((w[1], w[0]))
+
+            if candidates:
+                candidates.sort()
+                starts[col] = candidates[0][1]
+
+        fallback = {
+            "receipt": page_width * 0.03,
+            "completion": page_width * 0.16,
+            "details": page_width * 0.31,
+            "status": page_width * 0.49,
+            "paid": page_width * 0.63,
+            "withdrawn": page_width * 0.75,
+            "balance": page_width * 0.88,
+        }
+
+        for col, value in fallback.items():
+            starts.setdefault(col, value)
+
+        ordered_cols = ["receipt", "completion", "details", "status", "paid", "withdrawn", "balance"]
+        x = [starts[col] for col in ordered_cols]
+
+        if any(x[i] >= x[i + 1] for i in range(len(x) - 1)):
+            x = [fallback[col] for col in ordered_cols]
+
+        boundaries = {}
+        boundaries["receipt"] = (0, (x[0] + x[1]) / 2)
+        boundaries["completion"] = ((x[0] + x[1]) / 2, (x[1] + x[2]) / 2)
+        boundaries["details"] = ((x[1] + x[2]) / 2, (x[2] + x[3]) / 2)
+        boundaries["status"] = ((x[2] + x[3]) / 2, (x[3] + x[4]) / 2)
+        boundaries["paid"] = ((x[3] + x[4]) / 2, (x[4] + x[5]) / 2)
+        boundaries["withdrawn"] = ((x[4] + x[5]) / 2, (x[5] + x[6]) / 2)
+        boundaries["balance"] = ((x[5] + x[6]) / 2, page_width + 20)
+
+        return boundaries
+
+    def cell_text(self, row_words, x_min, x_max):
+        cell = [w for w in row_words if x_min <= w[0] < x_max]
+        cell.sort(key=lambda w: (round(w[1], 1), w[0]))
+        return clean_text(" ".join(str(w[4]) for w in cell))
+
+    def parse_transactions_from_page(self, page, page_number, patterns):
+        words = page.get_text("words")
+
+        if not words:
+            return []
+
+        page_width = page.rect.width
+        page_height = page.rect.height
+        columns = self.detect_column_ranges(words, page_width, page_height)
+
+        completion_x_min, completion_x_max = columns["completion"]
+        row_start_candidates = []
+
+        for w in words:
+            word_text = str(w[4]).strip()
+            x0, y0 = w[0], w[1]
+
+            if DATE_RE.fullmatch(word_text) and completion_x_min <= x0 < completion_x_max:
+                row_start_candidates.append(y0)
+
+        row_starts = []
+        for y in sorted(row_start_candidates):
+            if not row_starts or abs(y - row_starts[-1]) > 3:
+                row_starts.append(y)
+
+        transactions = []
+
+        for i, start_y in enumerate(row_starts):
+            end_y = row_starts[i + 1] if i + 1 < len(row_starts) else page_height + 20
+
+            row_words = [w for w in words if start_y - 2 <= w[1] < end_y - 1]
+
+            if not row_words:
                 continue
-            date_str = date_match.group(0)
-            time_str = ""
-        else:
-            date_str = dt_match.group(1)
-            time_str = dt_match.group(2)
 
-        month = date_str[:7]
-        paid_text = cell_text(row_words, *columns["paid"])
-        withdrawn_text = cell_text(row_words, *columns["withdrawn"])
-        details_text = cell_text(row_words, *columns["details"])
-        receipt_text = cell_text(row_words, *columns["receipt"])
+            row_text = clean_text(" ".join(str(w[4]) for w in sorted(row_words, key=lambda w: (round(w[1], 1), w[0]))))
 
-        paid_in = parse_amount(paid_text)
-        withdrawn = parse_amount(withdrawn_text)
+            dt_match = DATETIME_RE.search(row_text)
 
-        search_blob = clean_text(f"{details_text} {row_text}")
-        matched_terms = term_matches_text(search_blob, patterns)
+            if not dt_match:
+                date_match = DATE_RE.search(row_text)
+                if not date_match:
+                    continue
+                date_str = date_match.group(0)
+                time_str = ""
+            else:
+                date_str = dt_match.group(1)
+                time_str = dt_match.group(2)
 
-        if is_ellegant_credit_text(search_blob):
-            for term in patterns:
-                if "ELLEGANT" in term.upper() and "CREDIT" in term.upper():
-                    if term not in matched_terms:
-                        matched_terms.append(term)
+            month = date_str[:7]
+            paid_text = self.cell_text(row_words, *columns["paid"])
+            withdrawn_text = self.cell_text(row_words, *columns["withdrawn"])
+            details_text = self.cell_text(row_words, *columns["details"])
+            receipt_text = self.cell_text(row_words, *columns["receipt"])
 
-        transactions.append({
-            "page": page_number,
-            "receipt": receipt_text,
-            "date": date_str,
-            "time": time_str,
-            "month": month,
-            "details": details_text,
-            "paid_in": paid_in,
-            "withdrawn": withdrawn,
-            "amount_paid": amount_paid_value(withdrawn),
-            "matched_terms": matched_terms,
-            "row_text": row_text,
-            "search_blob": search_blob,
+            paid_in = parse_amount(paid_text)
+            withdrawn = parse_amount(withdrawn_text)
+
+            # Search using both the clean Details cell and the full row.
+            # The Details cell is important because wrapped PDF text can be read out of order.
+            search_blob = clean_text(f"{details_text} {row_text}")
+            matched_terms = term_matches_text(search_blob, patterns)
+
+            # Extra protection for ELLEGANT CREDIT LTD rows where PDF extraction separates words.
+            if is_ellegant_credit_text(search_blob):
+                for term in patterns:
+                    if "ELLEGANT" in term.upper() and "CREDIT" in term.upper():
+                        if term not in matched_terms:
+                            matched_terms.append(term)
+
+            transactions.append({
+                "page": page_number,
+                "receipt": receipt_text,
+                "date": date_str,
+                "time": time_str,
+                "month": month,
+                "details": details_text,
+                "paid_in": paid_in,
+                "withdrawn": withdrawn,
+                "amount_paid": amount_paid_value(withdrawn),
+                "matched_terms": matched_terms,
+                "row_text": row_text,
+                "search_blob": search_blob,
+            })
+
+        return transactions
+
+    def parse_all_transactions(self, doc, search_terms):
+        patterns = build_term_patterns(search_terms)
+        transactions = []
+
+        for page_number, page in enumerate(doc, start=1):
+            transactions.extend(self.parse_transactions_from_page(page, page_number, patterns))
+
+        return transactions
+
+    def monthly_paid_in_summary(self, transactions):
+        monthly = defaultdict(lambda: {
+            "paid_in_excluding_matches": 0.0,
+            "paid_in_excluded_matched": 0.0,
+            "counted_paid_in_rows": 0,
+            "excluded_paid_in_rows": 0,
         })
 
-    return transactions
+        for tx in transactions:
+            paid_in = tx["paid_in"]
 
+            if paid_in <= 0:
+                continue
 
-def parse_all_transactions(doc, loan_companies):
-    patterns = build_term_patterns(loan_companies)
-    transactions = []
+            month = tx["month"]
 
-    for page_number, page in enumerate(doc, start=1):
-        transactions.extend(parse_transactions_from_page(page, page_number, patterns))
+            if tx["matched_terms"]:
+                monthly[month]["paid_in_excluded_matched"] += paid_in
+                monthly[month]["excluded_paid_in_rows"] += 1
+            else:
+                monthly[month]["paid_in_excluding_matches"] += paid_in
+                monthly[month]["counted_paid_in_rows"] += 1
 
-    return transactions
+        return monthly
 
+    def ellegant_credit_transactions(self, transactions):
+        patterns = build_term_patterns(ELLEGANT_TERMS)
+        rows = []
 
-def monthly_paid_in_summary(transactions):
-    monthly = defaultdict(lambda: {
-        "paid_in_excluding_matches": 0.0,
-        "paid_in_excluded_matched": 0.0,
-        "counted_paid_in_rows": 0,
-        "excluded_paid_in_rows": 0,
-    })
+        for tx in transactions:
+            search_blob = clean_text(f"{tx.get('details', '')} {tx.get('row_text', '')} {tx.get('search_blob', '')}")
 
-    for tx in transactions:
-        paid_in = tx["paid_in"]
+            if term_matches_text(search_blob, patterns) or is_ellegant_credit_text(search_blob):
+                amount = tx.get("amount_paid", 0.0)
+                if amount <= 0:
+                    amount = amount_paid_value(tx.get("withdrawn", 0.0))
 
-        if paid_in <= 0:
-            continue
+                rows.append({
+                    "month": tx["month"],
+                    "date": tx["date"],
+                    "receipt": tx["receipt"],
+                    "amount": amount,
+                    "page": tx["page"],
+                    "details": tx["details"],
+                })
 
-        month = tx["month"]
+        rows.sort(key=lambda r: (r["month"], r["date"], r["receipt"]))
+        return rows
 
-        if tx["matched_terms"]:
-            monthly[month]["paid_in_excluded_matched"] += paid_in
-            monthly[month]["excluded_paid_in_rows"] += 1
-        else:
-            monthly[month]["paid_in_excluding_matches"] += paid_in
-            monthly[month]["counted_paid_in_rows"] += 1
+    def loan_repayment_transactions(self, transactions):
+        """
+        Loan repayment total is based on amount paid out to rows matching the loan companies.
+        These matched loan companies are treated as loan companies.
+        """
+        rows = []
 
-    return monthly
-
-
-def ellegant_credit_transactions(transactions):
-    patterns = build_term_patterns(ELLEGANT_TERMS)
-    rows = []
-
-    for tx in transactions:
-        search_blob = clean_text(f"{tx.get('details', '')} {tx.get('row_text', '')} {tx.get('search_blob', '')}")
-
-        if term_matches_text(search_blob, patterns) or is_ellegant_credit_text(search_blob):
+        for tx in transactions:
             amount = tx.get("amount_paid", 0.0)
 
             if amount <= 0:
-                amount = amount_paid_value(tx.get("withdrawn", 0.0))
-
-            rows.append({
-                "Month": tx["month"],
-                "Date Paid": tx["date"],
-                "Transaction ID / Receipt No.": tx["receipt"],
-                "Amount Paid": amount,
-                "Page": tx["page"],
-            })
-
-    rows.sort(key=lambda r: (r["Month"], r["Date Paid"], r["Transaction ID / Receipt No."]))
-    return rows
-
-
-def loan_repayment_transactions(transactions):
-    rows = []
-
-    for tx in transactions:
-        amount = tx.get("amount_paid", 0.0)
-
-        if amount <= 0:
-            continue
-
-        matched_terms = tx.get("matched_terms", [])
-
-        if not matched_terms:
-            continue
-
-        rows.append({
-            "Month": tx["month"],
-            "Date Paid": tx["date"],
-            "Loan Company": ", ".join(matched_terms),
-            "Transaction ID / Receipt No.": tx["receipt"],
-            "Amount Paid": amount,
-            "Page": tx["page"],
-        })
-
-    rows.sort(key=lambda r: (r["Month"], r["Date Paid"], r["Loan Company"], r["Transaction ID / Receipt No."]))
-    return rows
-
-
-def risk_profile_summary(monthly, loan_rows):
-    total_paid_in = sum(values["paid_in_excluding_matches"] for values in monthly.values())
-    total_loan = sum(row["Amount Paid"] for row in loan_rows)
-
-    if total_paid_in > 0:
-        percentage = (total_loan / total_paid_in) * 100
-    else:
-        percentage = 0.0
-
-    rating, score = risk_rating_from_percentage(percentage)
-
-    return {
-        "total_paid_in": total_paid_in,
-        "total_loan": total_loan,
-        "percentage": percentage,
-        "rating": rating,
-        "score": score,
-    }
-
-
-def loan_company_cashflow_summary(transactions):
-    """Summarize matched loan-company cashflows into loans received and installments paid."""
-    summary = defaultdict(lambda: {"loan_received": 0.0, "installments_paid": 0.0, "matched_transactions": 0})
-    monthly = defaultdict(lambda: {"paid_in_excluding_matches": 0.0, "loan_received": 0.0, "installments_paid": 0.0})
-    company_transactions = defaultdict(list)
-
-    for tx in transactions:
-        if tx.get("paid_in", 0.0) > 0 and not tx.get("matched_terms"):
-            monthly[tx["month"]]["paid_in_excluding_matches"] += tx["paid_in"]
-
-    for tx in sorted(transactions, key=lambda x: (x.get("date", ""), x.get("time", ""), x.get("receipt", ""))):
-        matched_terms = list(dict.fromkeys(tx.get("matched_terms", [])))
-        if not matched_terms:
-            continue
-
-        for company in matched_terms:
-            received = tx.get("paid_in", 0.0) if tx.get("paid_in", 0.0) > 0 else 0.0
-            paid = tx.get("amount_paid", 0.0) if tx.get("amount_paid", 0.0) > 0 else 0.0
-
-            if received <= 0 and paid <= 0:
                 continue
 
-            summary[company]["loan_received"] += received
-            summary[company]["installments_paid"] += paid
-            summary[company]["matched_transactions"] += 1
-            monthly[tx["month"]]["loan_received"] += received
-            monthly[tx["month"]]["installments_paid"] += paid
+            matched_terms = tx.get("matched_terms", [])
 
-            if received > 0 and paid <= 0:
-                tx_type = "Loan Received"
-            elif paid > 0 and received <= 0:
-                tx_type = "Installment Paid"
-            else:
-                tx_type = "Received/Paid"
+            if not matched_terms:
+                continue
 
-            company_transactions[company].append({
-                "date": tx.get("date", ""),
-                "time": tx.get("time", ""),
-                "type": tx_type,
-                "receipt": tx.get("receipt", ""),
-                "received": received,
-                "paid": paid,
-                "page": tx.get("page", ""),
-                "details": tx.get("details", ""),
+            rows.append({
+                "month": tx["month"],
+                "date": tx["date"],
+                "company": ", ".join(matched_terms),
+                "receipt": tx["receipt"],
+                "amount": amount,
+                "page": tx["page"],
             })
 
-    rows = []
-    for company, values in summary.items():
-        received = values["loan_received"]
-        paid = values["installments_paid"]
-        rows.append({
-            "Loan Company": company,
-            "Loan Received": received,
-            "Installments Paid": paid,
-            "Net Position": received - paid,
-            "Matched Txns": values["matched_transactions"],
-        })
+        rows.sort(key=lambda r: (r["month"], r["date"], r["company"], r["receipt"]))
+        return rows
 
-    rows.sort(key=lambda r: r["Installments Paid"], reverse=True)
-    return rows, monthly, dict(company_transactions)
+    def risk_profile_summary(self, monthly, loan_rows):
+        total_paid_in = sum(values["paid_in_excluding_matches"] for values in monthly.values())
+        total_loan = sum(row["amount"] for row in loan_rows)
 
+        if total_paid_in > 0:
+            percentage = (total_loan / total_paid_in) * 100
+        else:
+            percentage = 0.0
 
-def loan_cycle_summary(company_transactions):
-    """Infer loan cycles: every matched paid-in starts a new cycle; paid-out rows until next paid-in are installments."""
-    cycles = []
+        rating, score = risk_rating_from_percentage(percentage)
 
-    for company, events in company_transactions.items():
-        ordered = sorted(events, key=lambda e: (e.get("date", ""), e.get("time", ""), e.get("receipt", "")))
-        current = None
-        cycle_no = 0
+        return {
+            "total_paid_in": total_paid_in,
+            "total_loan": total_loan,
+            "percentage": percentage,
+            "rating": rating,
+            "score": score,
+        }
 
-        for event in ordered:
-            received = event.get("received", 0.0)
-            paid = event.get("paid", 0.0)
+    def loan_company_cashflow_summary(self, transactions):
+        """Group matched loan company transactions into received loans and installments paid."""
+        summary = defaultdict(lambda: {"loan_received": 0.0, "installments_paid": 0.0, "matched_transactions": 0})
+        monthly = defaultdict(lambda: {"paid_in_excluding_matches": 0.0, "loan_received": 0.0, "installments_paid": 0.0})
+        selected_transactions = defaultdict(list)
 
-            if received > 0:
-                if current is not None:
-                    cycles.append(current)
-                cycle_no += 1
-                current = {
-                    "Loan Company": company,
-                    "Cycle": cycle_no,
-                    "Loan Date": event.get("date", ""),
-                    "Loan Received": received,
-                    "Installments Paid": 0.0,
-                    "Installment Count": 0,
-                }
+        for tx in transactions:
+            if tx.get("paid_in", 0.0) > 0 and not tx.get("matched_terms"):
+                monthly[tx["month"]]["paid_in_excluding_matches"] += tx["paid_in"]
 
-            if paid > 0:
-                if current is None:
+        for tx in sorted(transactions, key=transaction_sort_key):
+            matched_terms = tx.get("matched_terms", [])
+            if not matched_terms:
+                continue
+            for company in matched_terms:
+                received = tx.get("paid_in", 0.0) if tx.get("paid_in", 0.0) > 0 else 0.0
+                paid = tx.get("amount_paid", 0.0) if tx.get("amount_paid", 0.0) > 0 else 0.0
+                if received <= 0 and paid <= 0:
+                    continue
+                summary[company]["loan_received"] += received
+                summary[company]["installments_paid"] += paid
+                summary[company]["matched_transactions"] += 1
+                monthly[tx["month"]]["loan_received"] += received
+                monthly[tx["month"]]["installments_paid"] += paid
+                tx_type = "Loan Received" if received > 0 and paid <= 0 else "Installment Paid" if paid > 0 and received <= 0 else "Received/Paid"
+                selected_transactions[company].append({"date": tx.get("date", ""), "time": tx.get("time", ""), "type": tx_type, "receipt": tx.get("receipt", ""), "received": received, "paid": paid, "page": tx.get("page", ""), "details": tx.get("details", "")})
+
+        rows = []
+        for company, values in summary.items():
+            received = values["loan_received"]
+            paid = values["installments_paid"]
+            rows.append({"company": company, "loan_received": received, "installments_paid": paid, "net_position": received - paid, "matched_transactions": values["matched_transactions"]})
+        rows.sort(key=lambda r: r["installments_paid"], reverse=True)
+        self.company_transactions = dict(selected_transactions)
+        return rows, monthly
+
+    def loan_cycle_summary(self):
+        """Infer loan cycles: each matched paid-in starts a new cycle; paid-out rows until the next paid-in are installments."""
+        cycles = []
+        for company, events in getattr(self, "company_transactions", {}).items():
+            ordered = sorted(events, key=lambda e: (e.get("date", ""), e.get("time", ""), e.get("receipt", "")))
+            current = None
+            cycle_no = 0
+            for event in ordered:
+                received = event.get("received", 0.0)
+                paid = event.get("paid", 0.0)
+                if received > 0:
+                    if current is not None:
+                        cycles.append(current)
                     cycle_no += 1
-                    current = {
-                        "Loan Company": company,
-                        "Cycle": cycle_no,
-                        "Loan Date": "Before first matched loan",
-                        "Loan Received": 0.0,
-                        "Installments Paid": 0.0,
-                        "Installment Count": 0,
-                    }
-                current["Installments Paid"] += paid
-                current["Installment Count"] += 1
+                    current = {"company": company, "cycle": cycle_no, "loan_date": event.get("date", ""), "loan_received": received, "installments_paid": 0.0, "installment_count": 0}
+                if paid > 0:
+                    if current is None:
+                        cycle_no += 1
+                        current = {"company": company, "cycle": cycle_no, "loan_date": "Before first matched loan", "loan_received": 0.0, "installments_paid": 0.0, "installment_count": 0}
+                    current["installments_paid"] += paid
+                    current["installment_count"] += 1
+            if current is not None:
+                cycles.append(current)
+        for cycle in cycles:
+            cycle["net_position"] = cycle["loan_received"] - cycle["installments_paid"]
+        self.loan_cycles = cycles
+        return cycles
 
-        if current is not None:
-            cycles.append(current)
+    def build_report(self, search_terms, search_results, transactions, monthly, ellegant_rows, loan_rows, risk_profile, customer_name, cashflow_rows=None, cycle_rows=None):
+        cashflow_rows = cashflow_rows or []
+        cycle_rows = cycle_rows or []
+        lines = []
+        total_loan_received = sum(row["loan_received"] for row in cashflow_rows)
+        total_installments_paid = sum(row["installments_paid"] for row in cashflow_rows)
+        net_position = total_loan_received - total_installments_paid
 
-    for cycle in cycles:
-        cycle["Net Position"] = cycle["Loan Received"] - cycle["Installments Paid"]
+        lines.append("MUTEMI M-PESA STATEMENT ANALYSIS SUMMARY")
+        lines.append("=" * 70)
+        lines.append(f"PDF file: {self.pdf_path}")
+        lines.append(f"Customer Name: {customer_name}")
+        lines.append("")
+        lines.append("EXECUTIVE SUMMARY")
+        lines.append("-" * 70)
+        lines.append(f"Transactions parsed: {len(transactions)}")
+        lines.append(f"Normal Paid In Total, excluding matched loan companies: {money(risk_profile['total_paid_in'])}")
+        lines.append(f"Loan received from matched loan companies: {money(total_loan_received)}")
+        lines.append(f"Installments paid to matched loan companies: {money(total_installments_paid)}")
+        lines.append(f"Net loan position, received less repaid: {money(net_position)}")
+        lines.append(f"Risk rating: {risk_profile['rating']} | Score: {risk_profile['score']} | Loan repayment percentage: {risk_profile['percentage']:.2f}%")
+        lines.append("")
 
-    return cycles
+        matched_rows = []
+        for term in search_terms:
+            result = search_results.get(term, {"count": 0, "pages": set()})
+            if result["count"] > 0:
+                pages = ", ".join(str(p) for p in sorted(result["pages"]))
+                matched_rows.append([term, str(result["count"]), pages])
+        lines.append("MATCHED LOAN COMPANIES")
+        lines.append("-" * 70)
+        if matched_rows:
+            lines.append(make_text_table(["Loan Company", "Total Matches", "Page Number(s)"], matched_rows))
+        else:
+            lines.append("No loan companies matched in the PDF.")
+        lines.append("")
 
+        lines.append("LOAN COMPANY CASHFLOW SUMMARY")
+        lines.append("-" * 70)
+        if cashflow_rows:
+            lines.append(make_text_table(["Loan Company", "Loan Received", "Installments Paid", "Net Position", "Matched Txns"], [[row["company"], money(row["loan_received"]), money(row["installments_paid"]), money(row["net_position"]), str(row["matched_transactions"])] for row in cashflow_rows]))
+        else:
+            lines.append("No matched loan-company cashflows were found.")
+        lines.append("")
 
-def build_report_v10(customer_name, loan_companies, search_results, transactions, monthly, ellegant_rows, loan_rows, risk_profile, cashflow_rows, cycle_rows):
-    lines = []
-    total_loan_received = sum(row["Loan Received"] for row in cashflow_rows)
-    total_installments_paid = sum(row["Installments Paid"] for row in cashflow_rows)
-    net_position = total_loan_received - total_installments_paid
+        monthly_rows = []
+        for month in sorted(monthly.keys()):
+            values = monthly[month]
+            monthly_rows.append([month, money(values["paid_in_excluding_matches"]), str(values["counted_paid_in_rows"]), money(values["paid_in_excluded_matched"]), str(values["excluded_paid_in_rows"])])
+        lines.append("MONTHLY PAID IN SUMMARY")
+        lines.append("-" * 70)
+        lines.append("Main total excludes Paid In rows whose details matched loan companies.")
+        lines.append("")
+        if monthly_rows:
+            lines.append(make_text_table(["Month", "Paid In Excluding Matches", "Counted Rows", "Paid In Excluded", "Excluded Rows"], monthly_rows))
+        else:
+            lines.append("No Paid In transactions were parsed. The PDF may be scanned or the table layout may be different.")
+        lines.append("")
 
-    lines.append("MUTEMI M-PESA STATEMENT ANALYSIS SUMMARY")
-    lines.append("═" * 70)
-    lines.append(f"Customer Name: {customer_name}")
-    lines.append("")
-    lines.append("EXECUTIVE SUMMARY")
-    lines.append("─" * 70)
-    lines.append(f"Transactions parsed: {len(transactions)}")
-    lines.append(f"Normal Paid In Total, excluding matched loan companies: {money(risk_profile['total_paid_in'])}")
-    lines.append(f"Loan received from matched loan companies: {money(total_loan_received)}")
-    lines.append(f"Installments paid to matched loan companies: {money(total_installments_paid)}")
-    lines.append(f"Net loan position, received less repaid: {money(net_position)}")
-    lines.append(f"Risk rating: {risk_profile['rating']} | Score: {risk_profile['score']} | Loan repayment percentage: {risk_profile['percentage']:.2f}%")
-    lines.append("")
+        lines.append("ELLEGANT CREDIT LTD PAYMENT SUMMARY")
+        lines.append("-" * 70)
+        if ellegant_rows:
+            by_month = defaultdict(list)
+            for row in ellegant_rows:
+                by_month[row["month"]].append(row)
+            for month in sorted(by_month.keys()):
+                month_rows = by_month[month]
+                total = sum(row["amount"] for row in month_rows)
+                lines.append("")
+                lines.append(f"{month} - Total Paid: {money(total)}")
+                lines.append(make_text_table(["Date Paid", "Transaction ID / Receipt No.", "Amount Paid", "Page"], [[row["date"], row["receipt"], money(row["amount"]), str(row["page"])] for row in month_rows]))
+        else:
+            lines.append("No ELLEGANT CREDIT LTD transactions found.")
+        lines.append("")
 
-    matched_rows = []
-    for term in loan_companies:
-        result = search_results.get(term, {"count": 0, "pages": set()})
-        if result["count"] > 0:
-            pages = ", ".join(str(p) for p in sorted(result["pages"]))
-            matched_rows.append([term, str(result["count"]), pages])
+        lines.append("CUSTOMER RISK PROFILE")
+        lines.append("-" * 70)
+        lines.append("Formula: Total installments paid to matched loan companies / normal Paid In total * 100")
+        lines.append(make_text_table(["Total Paid In", "Installments Paid", "Loan % of Paid In", "Risk Rating", "Score"], [[money(risk_profile["total_paid_in"]), money(risk_profile["total_loan"]), f'{risk_profile["percentage"]:.2f}%', risk_profile["rating"], str(risk_profile["score"])]],))
+        lines.append("")
 
-    lines.append("MATCHED LOAN COMPANIES")
-    lines.append("─" * 70)
-    if matched_rows:
-        lines.append(make_text_table(["Loan Company", "Total Matches", "Page Number(s)"], matched_rows))
-    else:
-        lines.append("No loan companies matched in the PDF.")
-    lines.append("")
-
-    lines.append("LOAN COMPANY CASHFLOW SUMMARY")
-    lines.append("─" * 70)
-    if cashflow_rows:
-        lines.append(make_text_table(
-            ["Loan Company", "Loan Received", "Installments Paid", "Net Position", "Matched Txns"],
-            [[row["Loan Company"], money(row["Loan Received"]), money(row["Installments Paid"]), money(row["Net Position"]), str(row["Matched Txns"])] for row in cashflow_rows]
-        ))
-    else:
-        lines.append("No matched loan-company cashflows were found.")
-    lines.append("")
-
-    monthly_rows = []
-    for month in sorted(monthly.keys()):
-        values = monthly[month]
-        monthly_rows.append([
-            month,
-            money(values["paid_in_excluding_matches"]),
-            str(values["counted_paid_in_rows"]),
-            money(values["paid_in_excluded_matched"]),
-            str(values["excluded_paid_in_rows"]),
-        ])
-
-    lines.append("MONTHLY PAID IN SUMMARY")
-    lines.append("─" * 70)
-    lines.append("Main total excludes Paid In rows whose details matched loan companies.")
-    if monthly_rows:
-        lines.append(make_text_table(["Month", "Paid In Excluding Matches", "Counted Rows", "Paid In Excluded", "Excluded Rows"], monthly_rows))
-    else:
-        lines.append("No monthly paid-in rows were found.")
-    lines.append("")
-
-    lines.append("CUSTOMER RISK PROFILE")
-    lines.append("─" * 70)
-    lines.append("Formula: Total loan repayment to matched loan companies / Total Paid In amount * 100")
-    lines.append(make_text_table(
-        ["Total Paid In", "Total Installments Paid", "Loan % of Paid In", "Risk Rating", "Score"],
-        [[money(risk_profile["total_paid_in"]), money(risk_profile["total_loan"]), f'{risk_profile["percentage"]:.2f}%', risk_profile["rating"], str(risk_profile["score"])]],
-    ))
-    lines.append("")
-
-    lines.append("Loan companies used:")
-    for term in loan_companies:
-        lines.append(f"- {term}")
-
-    return "\n".join(lines)
-
-
-def build_report(customer_name, loan_companies, search_results, transactions, monthly, ellegant_rows, loan_rows, risk_profile):
-    lines = []
-
-    lines.append("MUTEMI M-PESA STATEMENT ANALYSIS SUMMARY")
-    lines.append("=" * 60)
-    lines.append(f"Customer Name: {customer_name}")
-    lines.append("")
-
-    matched_rows = []
-    for term in loan_companies:
-        result = search_results.get(term, {"count": 0, "pages": set()})
-        if result["count"] > 0:
-            pages = ", ".join(str(p) for p in sorted(result["pages"]))
-            matched_rows.append([term, str(result["count"]), pages])
-
-    lines.append("MATCHED LOAN COMPANIES")
-    lines.append("-" * 60)
-
-    if matched_rows:
-        lines.append(make_text_table(["Loan Company", "Total Matches", "Page Number(s)"], matched_rows))
-    else:
-        lines.append("No loan companies matched in the PDF.")
-
-    lines.append("")
-
-    monthly_rows = []
-    for month in sorted(monthly.keys()):
-        values = monthly[month]
-        monthly_rows.append([
-            month,
-            money(values["paid_in_excluding_matches"]),
-            str(values["counted_paid_in_rows"]),
-            money(values["paid_in_excluded_matched"]),
-            str(values["excluded_paid_in_rows"]),
-        ])
-
-    lines.append("MONTHLY PAID IN SUMMARY")
-    lines.append("-" * 60)
-
-    if monthly_rows:
-        lines.append(make_text_table(
-            ["Month", "Paid In Excluding Matches", "Counted Rows", "Paid In Excluded", "Excluded Rows"],
-            monthly_rows
-        ))
-    else:
-        lines.append("No Paid In transactions were parsed.")
-
-    lines.append("")
-    lines.append("ELLEGANT CREDIT LTD PAYMENT SUMMARY")
-    lines.append("-" * 60)
-
-    if ellegant_rows:
-        by_month = defaultdict(list)
-        for row in ellegant_rows:
-            by_month[row["Month"]].append(row)
-
-        for month in sorted(by_month.keys()):
-            month_rows = by_month[month]
-            total = sum(row["Amount Paid"] for row in month_rows)
-
+        if cycle_rows:
+            lines.append("INFERRED LOAN CYCLES")
+            lines.append("-" * 70)
+            lines.append("Each matched Paid In starts a new loan cycle; matched Paid Out rows before the next Paid In are treated as installments.")
+            lines.append(make_text_table(["Loan Company", "Cycle", "Loan Date", "Loan Received", "Installments Paid", "Installments", "Net Position"], [[row["company"], str(row["cycle"]), row["loan_date"], money(row["loan_received"]), money(row["installments_paid"]), str(row["installment_count"]), money(row["net_position"])] for row in cycle_rows]))
             lines.append("")
-            lines.append(f"{month} - Total Paid: {money(total)}")
-            lines.append(make_text_table(
-                ["Date Paid", "Transaction ID / Receipt No.", "Amount Paid", "Page"],
-                [
-                    [row["Date Paid"], row["Transaction ID / Receipt No."], money(row["Amount Paid"]), str(row["Page"])]
-                    for row in month_rows
-                ]
-            ))
-    else:
-        lines.append("No ELLEGANT CREDIT LTD transactions found.")
 
-    lines.append("")
-    lines.append("CUSTOMER RISK PROFILE")
-    lines.append("-" * 60)
-    lines.append("Formula: Total loan repayment to matched loan companies / Total Paid In amount * 100")
-    lines.append("")
-    lines.append(make_text_table(
-        ["Total Paid In", "Total Loan Repayment", "Loan % of Paid In", "Risk Rating", "Score"],
-        [[
-            money(risk_profile["total_paid_in"]),
-            money(risk_profile["total_loan"]),
-            f'{risk_profile["percentage"]:.2f}%',
-            risk_profile["rating"],
-            str(risk_profile["score"]),
-        ]]
-    ))
+        if loan_rows:
+            lines.append("INSTALLMENT TRANSACTIONS USED IN RISK CALCULATION")
+            lines.append("-" * 70)
+            lines.append(make_text_table(["Month", "Date Paid", "Loan Company", "Receipt No.", "Amount Paid", "Page"], [[row["month"], row["date"], row["company"], row["receipt"], money(row["amount"]), str(row["page"])] for row in loan_rows],))
+        else:
+            lines.append("No matched loan repayment transactions were found.")
 
-    lines.append("")
-    lines.append(f"Transactions parsed: {len(transactions)}")
-    lines.append("")
-    lines.append("Loan companies used:")
+        lines.append("")
+        lines.append("Loan companies used:")
+        for term in search_terms:
+            lines.append(f"- {term}")
+        return "\n".join(lines)
 
-    for term in loan_companies:
-        lines.append(f"- {term}")
+    def get_risk_colors(self, rating):
+        """Return card colours based on the risk rating."""
+        rating = (rating or "").lower()
 
-    return "\n".join(lines)
+        if rating == "very good":
+            return "#DCFCE7", "#166534"  # green
+        if rating == "good":
+            return "#ECFDF5", "#047857"  # soft green
+        if rating == "fair":
+            return "#FEF9C3", "#854D0E"  # yellow
+        if rating == "risky":
+            return "#FFEDD5", "#9A3412"  # orange
+        if rating == "very risky":
+            return "#FEE2E2", "#991B1B"  # red
 
+        return "#E2E8F0", "#334155"
 
-def style_metric_card(title, value, bg, fg):
-    st.markdown(
-        f"""
-        <div class="metric-card" style="background:{bg}; color:{fg};">
-            <div class="metric-title">{title}</div>
-            <div class="metric-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    def set_risk_rating_display(self, rating, score=None):
+        """Update the risk card and risk profile text colours dynamically."""
+        bg, fg = self.get_risk_colors(rating)
 
+        display_text = "N/A" if not rating or rating == "N/A" else rating
+        if score not in (None, "N/A") and display_text != "N/A":
+            display_text = f"{rating} ({score})"
 
-def initialize_state():
-    if "loan_companies" not in st.session_state:
-        st.session_state.loan_companies = DEFAULT_LOAN_COMPANIES.copy()
+        risk_card = self.card_values.get("Risk Rating")
+        if risk_card is not None:
+            risk_card.config(text=display_text, bg=bg, fg=fg)
+            parent = risk_card.master
+            parent.config(bg=bg)
+            for child in parent.winfo_children():
+                child.config(bg=bg, fg=fg)
 
-    if "analysis" not in st.session_state:
-        st.session_state.analysis = None
+        if hasattr(self, "risk_rating_value_label"):
+            self.risk_rating_value_label.config(fg=fg)
+        if hasattr(self, "risk_score_value_label"):
+            self.risk_score_value_label.config(fg=fg)
 
+    def clear_results(self):
+        for tree in [self.matched_tree, self.monthly_tree, self.ellegant_tree, self.loan_repayment_tree, self.company_summary_tree, self.selected_company_tree, self.loan_cycle_tree]:
+            for item in tree.get_children():
+                tree.delete(item)
 
-def add_loan_company():
-    value = st.session_state.get("new_loan_company", "").strip()
+        self.report_text.config(state="normal")
+        self.report_text.delete("1.0", tk.END)
+        self.report_text.config(state="disabled")
+        self.last_report = ""
 
-    if not value:
-        return
+        self.customer_name = "N/A"
+        self.card_values["Customer Name"].config(text="N/A")
+        self.card_values["Transactions Parsed"].config(text="0")
+        self.card_values["Monthly Paid In Total"].config(text="0.00")
+        self.card_values["Loan Received"].config(text="0.00")
+        self.card_values["Installment Paid"].config(text="0.00")
+        self.set_risk_rating_display("N/A", "N/A")
 
-    existing = [item.lower() for item in st.session_state.loan_companies]
+        self.risk_total_paid_in_var.set("0.00")
+        self.risk_total_loan_var.set("0.00")
+        self.risk_percentage_var.set("0.00%")
+        self.risk_rating_var.set("N/A")
+        self.risk_score_var.set("N/A")
+        self.selected_received_var.set("0.00")
+        self.selected_paid_var.set("0.00")
+        self.selected_net_var.set("0.00")
+        self.selected_count_var.set("0")
+        self.selected_company_var.set("")
+        self.selected_company_combo["values"] = []
+        self.company_transactions = {}
+        self.loan_cycles = []
+        self.draw_empty_charts()
 
-    if value.lower() not in existing:
-        st.session_state.loan_companies.append(value)
+        self.status_label.config(text="Results cleared.")
 
-    st.session_state.new_loan_company = ""
+    def analyze_pdf(self):
+        if not self.pdf_path:
+            messagebox.showinfo("No PDF selected", "Please select an M-PESA statement PDF first.")
+            return
 
+        if not os.path.exists(self.pdf_path):
+            messagebox.showerror("File missing", "The selected PDF file does not exist.")
+            return
 
-def delete_loan_companies(selected):
-    st.session_state.loan_companies = [
-        item for item in st.session_state.loan_companies if item not in selected
-    ]
+        search_terms = self.get_search_terms()
 
+        if not search_terms:
+            messagebox.showinfo("No loan companies", "Please add at least one loan company.")
+            return
 
-def human_file_size(size_bytes):
-    try:
-        size_bytes = float(size_bytes)
-    except Exception:
-        return ""
-    if size_bytes < 1024:
-        return f"{size_bytes:.0f} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    return f"{size_bytes / (1024 * 1024):.1f} MB"
+        self.status_label.config(text="Analyzing statement...")
+        self.root.update_idletasks()
 
+        try:
+            doc = self.open_pdf(self.pdf_path)
 
-def render_loan_company_list(companies):
-    if not companies:
-        st.caption("No loan companies added yet.")
-        return
+            if doc is None:
+                self.status_label.config(text="Analysis cancelled.")
+                return
 
-    html_items = ''.join(f'<div class="loan-item">{c}</div>' for c in companies)
-    st.markdown(f'<div class="loan-list-box">{html_items}</div>', unsafe_allow_html=True)
+            customer_name = extract_customer_name_from_pdf(doc)
+            self.customer_name = customer_name
 
+            search_results = self.find_search_terms_by_page(doc, search_terms)
+            transactions = self.parse_all_transactions(doc, search_terms)
+            monthly = self.monthly_paid_in_summary(transactions)
+            ellegant_rows = self.ellegant_credit_transactions(transactions)
+            loan_rows = self.loan_repayment_transactions(transactions)
+            risk_profile = self.risk_profile_summary(monthly, loan_rows)
+            cashflow_rows, cashflow_monthly = self.loan_company_cashflow_summary(transactions)
+            cycle_rows = self.loan_cycle_summary()
 
-def analyze_pdf(pdf_bytes, password, loan_companies):
-    doc, error = open_pdf_from_bytes(pdf_bytes, password=password)
+            report = self.build_report(search_terms, search_results, transactions, monthly, ellegant_rows, loan_rows, risk_profile, customer_name, cashflow_rows, cycle_rows)
+            self.last_report = report
 
-    if error:
-        return None, error
+            doc.close()
 
-    customer_name = extract_customer_name(doc)
-    search_results = find_loan_companies_by_page(doc, loan_companies)
-    transactions = parse_all_transactions(doc, loan_companies)
-    monthly = monthly_paid_in_summary(transactions)
-    ellegant_rows = ellegant_credit_transactions(transactions)
-    loan_rows = loan_repayment_transactions(transactions)
-    risk_profile = risk_profile_summary(monthly, loan_rows)
-    cashflow_rows, cashflow_monthly, company_transactions = loan_company_cashflow_summary(transactions)
-    cycle_rows = loan_cycle_summary(company_transactions)
-    report = build_report_v10(
-        customer_name,
-        loan_companies,
-        search_results,
-        transactions,
-        monthly,
-        ellegant_rows,
-        loan_rows,
-        risk_profile,
-        cashflow_rows,
-        cycle_rows,
-    )
+            self.update_results_tables(search_terms, search_results, monthly, ellegant_rows, transactions, loan_rows, risk_profile, customer_name, cashflow_rows, cashflow_monthly, cycle_rows)
+            self.render_professional_summary(search_terms, search_results, monthly, ellegant_rows, risk_profile, customer_name, cashflow_rows, cycle_rows)
 
-    doc.close()
+            self.status_label.config(text=f"Done. Transactions parsed: {len(transactions)}")
 
-    return {
-        "customer_name": customer_name,
-        "search_results": search_results,
-        "transactions": transactions,
-        "monthly": monthly,
-        "ellegant_rows": ellegant_rows,
-        "loan_rows": loan_rows,
-        "risk_profile": risk_profile,
-        "cashflow_rows": cashflow_rows,
-        "cashflow_monthly": cashflow_monthly,
-        "company_transactions": company_transactions,
-        "cycle_rows": cycle_rows,
-        "report": report,
-    }, None
+        except Exception as e:
+            self.status_label.config(text="Error.")
+            messagebox.showerror("Analysis error", str(e))
 
+    def update_results_tables(self, search_terms, search_results, monthly, ellegant_rows, transactions, loan_rows, risk_profile, customer_name, cashflow_rows=None, cashflow_monthly=None, cycle_rows=None):
+        for item in self.matched_tree.get_children():
+            self.matched_tree.delete(item)
+
+        for term in search_terms:
+            result = search_results.get(term, {"count": 0, "pages": set()})
+            if result["count"] > 0:
+                pages = ", ".join(str(p) for p in sorted(result["pages"]))
+                self.matched_tree.insert("", "end", values=(term, result["count"], pages))
+
+        for item in self.monthly_tree.get_children():
+            self.monthly_tree.delete(item)
+
+        total_paid_in_excluding = 0.0
+        for month in sorted(monthly.keys()):
+            values = monthly[month]
+            total_paid_in_excluding += values["paid_in_excluding_matches"]
+
+            self.monthly_tree.insert(
+                "",
+                "end",
+                values=(
+                    month,
+                    money(values["paid_in_excluding_matches"]),
+                    values["counted_paid_in_rows"],
+                    money(values["paid_in_excluded_matched"]),
+                    values["excluded_paid_in_rows"],
+                ),
+            )
+
+        cashflow_rows = cashflow_rows or []
+        cashflow_monthly = cashflow_monthly or {}
+        cycle_rows = cycle_rows or []
+
+        for item in self.company_summary_tree.get_children():
+            self.company_summary_tree.delete(item)
+        for row in cashflow_rows:
+            self.company_summary_tree.insert("", "end", values=(row["company"], money(row["loan_received"]), money(row["installments_paid"]), money(row["net_position"]), row["matched_transactions"]))
+
+        self.draw_dashboard_charts(cashflow_monthly, cashflow_rows)
+        self.update_selected_company_options(cashflow_rows, cycle_rows)
+
+        for item in self.ellegant_tree.get_children():
+            self.ellegant_tree.delete(item)
+
+        ellegant_total = 0.0
+        current_month = None
+
+        for row in ellegant_rows:
+            if row["month"] != current_month:
+                current_month = row["month"]
+                month_total = sum(r["amount"] for r in ellegant_rows if r["month"] == current_month)
+                self.ellegant_tree.insert(
+                    "",
+                    "end",
+                    values=(current_month, "", "MONTH TOTAL", money(month_total), ""),
+                    tags=("month_total",),
+                )
+
+            ellegant_total += row["amount"]
+            self.ellegant_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["month"],
+                    row["date"],
+                    row["receipt"],
+                    money(row["amount"]),
+                    row["page"],
+                ),
+            )
+
+        self.ellegant_tree.tag_configure("month_total", background="#DCFCE7", foreground="#14532D")
+
+        for item in self.loan_repayment_tree.get_children():
+            self.loan_repayment_tree.delete(item)
+
+        current_month = None
+        for row in loan_rows:
+            if row["month"] != current_month:
+                current_month = row["month"]
+                month_total = sum(r["amount"] for r in loan_rows if r["month"] == current_month)
+                self.loan_repayment_tree.insert(
+                    "",
+                    "end",
+                    values=(current_month, "", "MONTH TOTAL", "", money(month_total), ""),
+                    tags=("loan_month_total",)
+                )
+
+            self.loan_repayment_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["month"],
+                    row["date"],
+                    row["company"],
+                    row["receipt"],
+                    money(row["amount"]),
+                    row["page"],
+                )
+            )
+
+        self.loan_repayment_tree.tag_configure("loan_month_total", background="#DBEAFE", foreground="#1E3A8A")
+
+        self.risk_total_paid_in_var.set(money(risk_profile["total_paid_in"]))
+        self.risk_total_loan_var.set(money(risk_profile["total_loan"]))
+        self.risk_percentage_var.set(f'{risk_profile["percentage"]:.2f}%')
+        self.risk_rating_var.set(risk_profile["rating"])
+        self.risk_score_var.set(str(risk_profile["score"]))
+
+        self.card_values["Customer Name"].config(text=customer_name)
+        self.card_values["Transactions Parsed"].config(text=str(len(transactions)))
+        self.card_values["Monthly Paid In Total"].config(text=money(total_paid_in_excluding))
+        total_received = sum(row["loan_received"] for row in (cashflow_rows or []))
+        self.card_values["Loan Received"].config(text=money(total_received))
+        self.card_values["Installment Paid"].config(text=money(risk_profile["total_loan"]))
+        self.set_risk_rating_display(risk_profile["rating"], risk_profile["score"])
+
+    def draw_empty_charts(self):
+        if hasattr(self, "monthly_chart_canvas"):
+            self.monthly_chart_canvas.delete("all")
+            self.monthly_chart_canvas.create_text(20, 20, anchor="nw", text="Monthly cashflow chart will appear after analysis.", fill="#64748B", font=("Segoe UI", 10))
+        if hasattr(self, "company_chart_canvas"):
+            self.company_chart_canvas.delete("all")
+            self.company_chart_canvas.create_text(20, 20, anchor="nw", text="Loan company chart will appear after analysis.", fill="#64748B", font=("Segoe UI", 10))
+
+    def draw_dashboard_charts(self, monthly_data, company_rows):
+        self.draw_monthly_bar_chart(monthly_data)
+        self.draw_company_pie_chart(company_rows)
+
+    def draw_monthly_bar_chart(self, monthly_data):
+        c = self.monthly_chart_canvas
+        c.delete("all")
+        width = max(c.winfo_width(), 560)
+        height = max(c.winfo_height(), 320)
+
+        c.create_text(18, 16, anchor="nw", text="Monthly Cashflow Comparison", fill="#0F172A", font=("Segoe UI", 12, "bold"))
+        c.create_text(18, 36, anchor="nw", text="Compares normal Paid In cashflow, estimated loan receipts, and estimated installments repaid.", fill="#64748B", font=("Segoe UI", 9))
+
+        months = sorted(monthly_data.keys())
+        if not months:
+            c.create_text(18, 72, anchor="nw", text="No data available.", fill="#64748B", font=("Segoe UI", 10))
+            return
+
+        colors = [
+            ("paid_in_excluding_matches", "#16A34A", "Normal Paid In"),
+            ("loan_received", "#0284C7", "Loan Received"),
+            ("installments_paid", "#EA580C", "Installments Paid"),
+        ]
+
+        # legend on its own row to avoid collisions
+        legend_y = 62
+        legend_x = 18
+        for _, color, label in colors:
+            c.create_rectangle(legend_x, legend_y, legend_x + 12, legend_y + 12, fill=color, outline="")
+            c.create_text(legend_x + 18, legend_y + 6, anchor="w", text=label, fill="#334155", font=("Segoe UI", 8, "bold"))
+            legend_x += 120
+
+        left, top, bottom = 58, 92, height - 48
+        chart_w = width - 95
+        chart_h = bottom - top
+        max_val = max(max(v.get("paid_in_excluding_matches", 0), v.get("loan_received", 0), v.get("installments_paid", 0)) for v in monthly_data.values()) or 1
+
+        # axes and y ticks
+        c.create_line(left, bottom, left + chart_w, bottom, fill="#94A3B8", width=1)
+        c.create_line(left, top, left, bottom, fill="#94A3B8", width=1)
+        for step in range(5):
+            y = bottom - step * (chart_h / 4)
+            val = max_val * step / 4
+            c.create_line(left, y, left + chart_w, y, fill="#E2E8F0")
+            c.create_text(left - 6, y, anchor="e", text=money(val), fill="#64748B", font=("Segoe UI", 7))
+
+        group_w = chart_w / max(len(months), 1)
+        bar_w = max(10, min(22, group_w / 5))
+
+        for i, month in enumerate(months):
+            x_center = left + i * group_w + group_w / 2
+            for j, (key, color, _label) in enumerate(colors):
+                val = monthly_data[month].get(key, 0)
+                bar_h = (val / max_val) * (chart_h - 10)
+                x0 = x_center + (j - 1) * (bar_w + 5) - bar_w / 2
+                x1 = x0 + bar_w
+                y0 = bottom - bar_h
+                c.create_rectangle(x0, y0, x1, bottom, fill=color, outline="")
+            c.create_text(x_center, bottom + 16, text=format_month_label(month).replace(' ', '\n', 1), fill="#334155", font=("Segoe UI", 8), justify="center")
+
+    def draw_company_pie_chart(self, company_rows):
+        c = self.company_chart_canvas
+        c.delete("all")
+        width = max(c.winfo_width(), 560)
+        height = max(c.winfo_height(), 320)
+        c.create_text(18, 16, anchor="nw", text="Installment Distribution by Loan Company", fill="#0F172A", font=("Segoe UI", 12, "bold"))
+        c.create_text(18, 36, anchor="nw", text="Shows how total installment repayments are spread across matched loan companies.", fill="#64748B", font=("Segoe UI", 9))
+
+        rows = [r for r in company_rows if r.get("installments_paid", 0) > 0]
+        if not rows:
+            c.create_text(18, 72, anchor="nw", text="No installment data available.", fill="#64748B", font=("Segoe UI", 10))
+            return
+
+        rows = sorted(rows, key=lambda r: r.get("installments_paid", 0), reverse=True)
+        if len(rows) > 5:
+            other_total = sum(r["installments_paid"] for r in rows[5:])
+            rows = rows[:5] + [{"company": "Other Companies", "installments_paid": other_total}]
+
+        total = sum(r["installments_paid"] for r in rows) or 1
+        colors = ["#16A34A", "#0284C7", "#EA580C", "#7C3AED", "#DC2626", "#0891B2"]
+
+        x0, y0, size = 30, 78, 180
+        start = 0
+        for i, row in enumerate(rows):
+            extent = row["installments_paid"] / total * 360
+            c.create_arc(x0, y0, x0 + size, y0 + size, start=start, extent=extent, fill=colors[i % len(colors)], outline="white", width=2)
+            start += extent
+
+        legend_x = x0 + size + 32
+        legend_y = y0 + 6
+        for i, row in enumerate(rows):
+            color = colors[i % len(colors)]
+            pct = row["installments_paid"] / total * 100
+            c.create_rectangle(legend_x, legend_y + i * 36, legend_x + 14, legend_y + i * 36 + 14, fill=color, outline="")
+            name = row['company'] if len(row['company']) <= 24 else row['company'][:21] + '...'
+            c.create_text(legend_x + 20, legend_y + i * 36 + 2, anchor="nw", text=name, fill="#0F172A", font=("Segoe UI", 8, "bold"))
+            c.create_text(legend_x + 20, legend_y + i * 36 + 17, anchor="nw", text=f"{money(row['installments_paid'])}  ({pct:.1f}%)", fill="#475569", font=("Segoe UI", 8))
+
+    def update_selected_company_options(self, cashflow_rows, cycle_rows):
+        companies = [row["company"] for row in cashflow_rows]
+        self.selected_company_combo["values"] = companies
+        if companies:
+            current = self.selected_company_var.get()
+            preferred = "ELLEGANT CREDIT LTD" if "ELLEGANT CREDIT LTD" in companies else companies[0]
+            self.selected_company_var.set(current if current in companies else preferred)
+            self.update_selected_company_view()
+        else:
+            self.selected_company_var.set("")
+            self.update_selected_company_view()
+
+    def update_selected_company_view(self):
+        company = self.selected_company_var.get()
+        for tree in [self.selected_company_tree, self.loan_cycle_tree]:
+            for item in tree.get_children():
+                tree.delete(item)
+        if not company:
+            self.selected_received_var.set("0.00")
+            self.selected_paid_var.set("0.00")
+            self.selected_net_var.set("0.00")
+            self.selected_count_var.set("0")
+            return
+        events = getattr(self, "company_transactions", {}).get(company, [])
+        received_total = sum(e.get("received", 0.0) for e in events)
+        paid_total = sum(e.get("paid", 0.0) for e in events)
+        self.selected_received_var.set(money(received_total))
+        self.selected_paid_var.set(money(paid_total))
+        self.selected_net_var.set(money(received_total - paid_total))
+        self.selected_count_var.set(str(len(events)))
+        for event in events:
+            self.selected_company_tree.insert("", "end", values=(event.get("date", ""), event.get("type", ""), event.get("receipt", ""), money(event.get("received", 0.0)) if event.get("received", 0.0) else "", money(event.get("paid", 0.0)) if event.get("paid", 0.0) else "", event.get("page", "")))
+        for row in getattr(self, "loan_cycles", []):
+            if row["company"] != company:
+                continue
+            self.loan_cycle_tree.insert("", "end", values=(row["company"], row["cycle"], row["loan_date"], money(row["loan_received"]), money(row["installments_paid"]), row["installment_count"], money(row["net_position"])))
+
+    def render_professional_summary(self, search_terms, search_results, monthly, ellegant_rows, risk_profile, customer_name, cashflow_rows=None, cycle_rows=None):
+        cashflow_rows = cashflow_rows or []
+        cycle_rows = cycle_rows or []
+        total_paid_in = risk_profile.get("total_paid_in", 0.0)
+        total_installments = risk_profile.get("total_loan", 0.0)
+        total_received = sum(row.get("loan_received", 0.0) for row in cashflow_rows)
+        net_position = total_received - total_installments
+
+        self.report_text.config(state="normal")
+        self.report_text.delete("1.0", tk.END)
+
+        self.report_text.insert(tk.END, "MUTEMI M-PESA Statement Analysis Summary\n", "title")
+        self.report_text.insert(tk.END, f"Customer: {customer_name}    •    Statement file: {Path(self.pdf_path).name if self.pdf_path else 'N/A'}\n", "subtitle")
+        self.report_text.insert(tk.END, f"Generated from the current statement analysis. The summary below highlights overall customer cashflow, matched microfinance activity, repayment behavior, and risk interpretation.\n\n", "muted")
+
+        self.report_text.insert(tk.END, "1. Executive Overview\n", "section")
+        overview = [
+            f"Transactions parsed: {self.card_values['Transactions Parsed'].cget('text')}",
+            f"Normal Paid In total (excluding matched loan companies): {money(total_paid_in)}",
+            f"Estimated loan receipts from matched loan companies: {money(total_received)}",
+            f"Estimated installments repaid to matched loan companies: {money(total_installments)}",
+            f"Net position (loan received less installments paid): {money(net_position)}",
+            f"Customer risk rating: {risk_profile.get('rating', 'N/A')} (Score {risk_profile.get('score', 'N/A')}) with a loan repayment percentage of {risk_profile.get('percentage', 0.0):.2f}%",
+        ]
+        for line in overview:
+            self.report_text.insert(tk.END, f"• {line}\n", "bullet")
+        self.report_text.insert(tk.END, "\n")
+
+        self.report_text.insert(tk.END, "2. Matched Loan Companies\n", "section")
+        matched = []
+        for term in search_terms:
+            result = search_results.get(term, {"count": 0, "pages": set()})
+            if result["count"] > 0:
+                pages = ", ".join(str(p) for p in sorted(result["pages"]))
+                matched.append([term, str(result["count"]), pages])
+        if matched:
+            self.report_text.insert(tk.END, make_text_table(["Loan Company", "Matches", "Page Number(s)"], matched) + "\n\n", "table")
+        else:
+            self.report_text.insert(tk.END, "No matched loan companies were identified in this statement.\n\n", "body")
+
+        self.report_text.insert(tk.END, "3. Loan Company Cashflow Summary\n", "section")
+        if cashflow_rows:
+            self.report_text.insert(tk.END, "This section estimates how much the customer appears to have received as loans and how much has been repaid as installments for each matched company.\n", "body")
+            cash_table = []
+            for row in cashflow_rows:
+                cash_table.append([row["company"], money(row["loan_received"]), money(row["installments_paid"]), money(row["net_position"]), str(row["matched_transactions"])])
+            self.report_text.insert(tk.END, make_text_table(["Loan Company", "Loan Received", "Installments Paid", "Net Position", "Matched Txns"], cash_table) + "\n\n", "table")
+        else:
+            self.report_text.insert(tk.END, "No matched loan-company cashflow rows were available.\n\n", "body")
+
+        self.report_text.insert(tk.END, "4. Monthly Paid In Trend\n", "section")
+        self.report_text.insert(tk.END, "The monthly summary below focuses on normal Paid In cashflow after excluding incoming rows linked to matched loan companies.\n", "body")
+        month_rows = []
+        for month in sorted(monthly.keys()):
+            vals = monthly[month]
+            month_rows.append([format_month_label(month), money(vals["paid_in_excluding_matches"]), str(vals["counted_paid_in_rows"]), money(vals["paid_in_excluded_matched"]), str(vals["excluded_paid_in_rows"])])
+        if month_rows:
+            self.report_text.insert(tk.END, make_text_table(["Month", "Paid In Excluding Matches", "Counted Rows", "Paid In Excluded", "Excluded Rows"], month_rows) + "\n\n", "table")
+        else:
+            self.report_text.insert(tk.END, "No monthly paid-in trend could be generated.\n\n", "body")
+
+        self.report_text.insert(tk.END, "5. ELLEGANT CREDIT LTD Summary\n", "section")
+        if ellegant_rows:
+            monthly_totals = {}
+            for row in ellegant_rows:
+                monthly_totals.setdefault(row['month'], 0.0)
+                monthly_totals[row['month']] += row['amount']
+            for month in sorted(monthly_totals.keys()):
+                self.report_text.insert(tk.END, f"• {format_month_label(month)} total paid to ELLEGANT CREDIT LTD: {money(monthly_totals[month])}\n", "bullet")
+            self.report_text.insert(tk.END, "\n")
+        else:
+            self.report_text.insert(tk.END, "No ELLEGANT CREDIT LTD transactions were found in this statement.\n\n", "body")
+
+        self.report_text.insert(tk.END, "6. Risk Interpretation\n", "section")
+        rating = risk_profile.get('rating', 'N/A')
+        tag = 'good' if rating in ('Very Good', 'Good') else 'warning' if rating in ('Fair', 'Risky') else 'bad'
+        self.report_text.insert(tk.END, f"Current rating: {rating} (Score {risk_profile.get('score', 'N/A')})\n", tag)
+        self.report_text.insert(tk.END, f"Repayment percentage: {risk_profile.get('percentage', 0.0):.2f}%\n", 'body')
+        self.report_text.insert(tk.END, "Interpretation: the risk score is based on the ratio of matched-loan installment payments to the main Paid In total. A higher percentage indicates greater loan pressure relative to regular incoming cashflow.\n\n", 'body')
+
+        self.report_text.insert(tk.END, "7. Inferred Loan Cycles\n", "section")
+        if cycle_rows:
+            cycle_table = []
+            for row in cycle_rows:
+                cycle_table.append([row['company'], str(row['cycle']), row['loan_date'], money(row['loan_received']), money(row['installments_paid']), str(row['installment_count']), money(row['net_position'])])
+            self.report_text.insert(tk.END, make_text_table(["Company", "Cycle", "Loan Date", "Loan Received", "Installments Paid", "Installment Count", "Net Position"], cycle_table) + "\n", "table")
+        else:
+            self.report_text.insert(tk.END, "No loan cycles could be inferred from the matched transactions.\n", "body")
+
+        self.report_text.config(state="disabled")
+
+    def save_summary(self):
+        if not self.last_report:
+            messagebox.showinfo("No summary", "There is no summary to save yet. Analyze a PDF first.")
+            return
+
+        default_name = "mutemi_mpesa_analysis_summary.txt"
+        if self.pdf_path:
+            default_name = Path(self.pdf_path).stem + "_mutemi_mpesa_analysis_summary.txt"
+
+        path = filedialog.asksaveasfilename(
+            title="Save Summary",
+            defaultextension=".txt",
+            initialfile=default_name,
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+
+        if not path:
+            return
+
+        Path(path).write_text(self.last_report, encoding="utf-8")
+        messagebox.showinfo("Saved", f"Summary saved to:\n{path}")
 
 
 def main():
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="📱",
-        layout="wide",
-        initial_sidebar_state="collapsed",
-    )
-
-    initialize_state()
-
-    st.markdown(
-        """
-        <style>
-            .stApp { background: #F1F5F9; }
-            .block-container { padding: 0.35rem 0.85rem 1rem 0.85rem; max-width: 100% !important; }
-            [data-testid="stSidebar"] { display: none; }
-            .offline-header {
-                background:#052E16;
-                color:white;
-                padding: 20px 22px 16px 22px;
-                margin: -0.6rem -0.85rem 14px -0.85rem;
-                min-height: 96px;
-                border-bottom: 1px solid #0B4A20;
-            }
-            .offline-header h1 { margin:0; font-size: 1.95rem; font-weight:800; }
-            .offline-header p { margin: 8px 0 0 0; font-size: 0.92rem; color:#DCFCE7; }
-            .file-bar {
-                background: white;
-                border: 1px solid #CBD5E1;
-                padding: 13px 16px;
-                min-height: 58px;
-                margin-bottom: 12px;
-                display:flex;
-                align-items:center;
-                gap: 14px;
-            }
-            .file-label { font-weight:800; color:#0F172A; min-width: 100px; }
-            .file-name { color:#475569; font-size:0.90rem; word-break:break-all; }
-            .left-panel {
-                background:white;
-                border:1px solid #CBD5E1;
-                padding: 18px 14px 12px 14px;
-                min-height: 640px;
-            }
-            .left-title { font-size:1.35rem; font-weight:800; color:#0F2B46; margin-bottom:8px; }
-            .left-help { font-size:0.86rem; color:#475569; line-height:1.25; margin-bottom:12px; }
-            .uploaded-file-box {
-                background: #F8FAFC;
-                border: 1px solid #D6DEE8;
-                border-radius: 7px;
-                padding: 9px 10px;
-                margin: 8px 0 12px 0;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            .file-icon {
-                width: 34px;
-                height: 34px;
-                border-radius: 6px;
-                background: #263447;
-                color: white;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: 800;
-                font-size: 0.8rem;
-            }
-            .file-meta { line-height:1.25; flex:1; overflow:hidden; }
-            .upload-name { color:#0F172A; font-size:0.88rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-            .upload-size { color:#64748B; font-size:0.78rem; }
-            .password-card { background:#F8FAFC; border:1px solid #D6DEE8; padding:10px; margin:10px 0 15px 0; }
-            .password-title { font-size:0.95rem; font-weight:800; color:#0F172A; margin-bottom:4px; }
-            .password-file { font-size:0.78rem; color:#475569; word-break:break-all; margin-bottom:8px; }
-            .loan-list-box { border:1px solid #8D99A8; background:#FFFFFF; height: 300px; overflow-y:auto; margin:10px 0 12px 0; padding:4px 0; }
-            .loan-item { padding:3px 6px; color:#111827; font-size:0.90rem; line-height:1.3; }
-            .metric-card {
-                border:1px solid #C0CCD9;
-                padding: 15px 18px;
-                min-height:88px;
-                margin-bottom:12px;
-            }
-            .metric-title { font-size:0.84rem; font-weight:800; margin-bottom:11px; }
-            .metric-value { font-size:1.45rem; font-weight:900; line-height:1.1; word-break:break-word; }
-            .right-shell { background:white; border:1px solid #AEB9C4; padding:10px; min-height:630px; }
-            div[data-baseweb="tab-list"] { gap:0px; border-bottom:1px solid #9AA6B2; }
-            button[data-baseweb="tab"] {
-                background:#ECEFF3 !important;
-                border:1px solid #AEB9C4 !important;
-                border-bottom:0 !important;
-                border-radius:0 !important;
-                padding: 9px 13px !important;
-            }
-            button[data-baseweb="tab"] p { font-weight:800 !important; font-size:0.85rem !important; color:#0F172A !important; }
-            button[aria-selected="true"][data-baseweb="tab"] { background:#FFFFFF !important; border-bottom:2px solid #FFFFFF !important; }
-            .section-card { background:white; border:1px solid #CBD5E1; padding:14px 16px; margin: 8px 0 12px 0; }
-            .section-title { margin:0; font-size:1.15rem; font-weight:800; color:#0F172A; }
-            .section-subtitle { color:#475569; font-size:0.88rem; margin-top:6px; }
-            .stButton button[kind="primary"] { background:#16A34A !important; color:white !important; border:1px solid #16A34A !important; }
-            .stButton button[kind="primary"]:hover { background:#15803D !important; color:white !important; border-color:#15803D !important; }
-            .stButton > button { border-radius:0 !important; font-weight:800 !important; min-height:42px; }
-            .stDownloadButton > button { border-radius:0 !important; font-weight:800 !important; }
-            div[data-testid="stDataFrame"] { border:1px solid #CBD5E1; border-radius:0; background:white; }
-            .stTextArea textarea { font-family: Consolas, monospace !important; font-size:0.88rem !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        f"""
-        <div class="offline-header">
-            <h1>{APP_TITLE}</h1>
-            <p>Loan company matching, exclusion analysis, monthly Paid In totals, and ELLEGANT CREDIT payment tracking</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Defaults for widgets / file state
-    uploaded_file = None
-    password = ""
-
-    # Top statement bar and analyze button
-    top_button_label = "Re-analyze Statement" if st.session_state.get("analysis") else "Analyze Statement"
-    left_button_label = "Re-analyze Statement" if st.session_state.get("analysis") else "Analyze Statement"
-
-    top_file_col, top_btn_col = st.columns([5, 1])
-    with top_file_col:
-        current_file = st.session_state.get("current_file_name", "No statement selected.")
-        current_size = st.session_state.get("current_file_size", "")
-        st.markdown(
-            f"""
-            <div class="file-bar">
-                <div class="file-label">Statement File</div>
-                <div class="file-name">{current_file}{' • ' + current_size if current_size else ''}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with top_btn_col:
-        st.write("")
-        analyze_clicked_top = st.button(top_button_label, type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"), key="top_analyze_statement_button")
-
-    left_col, right_col = st.columns([1.05, 4.0], gap="small")
-
-    with left_col:
-        st.markdown('<div class="left-panel">', unsafe_allow_html=True)
-        st.markdown('<div class="left-title">Statement Upload</div>', unsafe_allow_html=True)
-        st.caption("Upload M-PESA PDF statement")
-        uploaded_file = st.file_uploader("Upload M-PESA PDF statement", type=["pdf"], label_visibility="collapsed", key="statement_pdf_uploader")
-
-        if uploaded_file is not None:
-            st.session_state.uploaded_pdf_bytes = uploaded_file.getvalue()
-            st.session_state.current_file_name = uploaded_file.name
-            st.session_state.current_file_size = human_file_size(uploaded_file.size)
-            st.markdown(
-                f"""
-                <div class="uploaded-file-box">
-                    <div class="file-icon">PDF</div>
-                    <div class="file-meta">
-                        <div class="upload-name">{uploaded_file.name}</div>
-                        <div class="upload-size">{human_file_size(uploaded_file.size)}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        elif st.session_state.get("current_file_name"):
-            st.markdown(
-                f"""
-                <div class="uploaded-file-box">
-                    <div class="file-icon">PDF</div>
-                    <div class="file-meta">
-                        <div class="upload-name">{st.session_state.current_file_name}</div>
-                        <div class="upload-size">{st.session_state.get('current_file_size','')}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        st.markdown('<div class="password-card">', unsafe_allow_html=True)
-        st.markdown('<div class="password-title">Password Protected Statement</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="password-file">File: {st.session_state.get("current_file_name", "No statement selected.")}</div>', unsafe_allow_html=True)
-        show_password = st.checkbox("Show password", value=False, key="show_pdf_password_checkbox")
-        password = st.text_input("Enter PDF password:", type="default" if show_password else "password", key="pdf_password_input")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        analyze_clicked_left = st.button(left_button_label, type="primary", use_container_width=True, disabled=not st.session_state.get("uploaded_pdf_bytes"), key="left_analyze_statement_button")
-
-        st.markdown('<hr style="border:0;border-top:1px solid #D0D7E2;margin:18px 0;">', unsafe_allow_html=True)
-        st.markdown('<div class="left-title" style="font-size:1.25rem;">Loan Companies</div>', unsafe_allow_html=True)
-        st.markdown('<div class="left-help">Rows matching these loan companies are excluded from the main Paid In total. Add or delete loan companies, then click Re-analyze.</div>', unsafe_allow_html=True)
-        render_loan_company_list(st.session_state.loan_companies)
-        st.text_input("Add loan company", key="new_loan_company", label_visibility="collapsed")
-        if st.button("Add", use_container_width=True, key="add_loan_company_button"):
-            add_loan_company()
-            st.rerun()
-        selected_delete = st.multiselect("Select companies to delete", options=st.session_state.loan_companies, key="companies_to_delete_multiselect")
-        del_col, reset_col = st.columns(2)
-        with del_col:
-            if st.button("Delete Selected", use_container_width=True, key="delete_selected_companies_button"):
-                delete_loan_companies(selected_delete)
-                st.rerun()
-        with reset_col:
-            if st.button("Reset", use_container_width=True, key="reset_loan_companies_button"):
-                st.session_state.loan_companies = DEFAULT_LOAN_COMPANIES.copy()
-                st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    do_analyze = analyze_clicked_top or analyze_clicked_left
-    if do_analyze:
-        with st.spinner("Analyzing statement..."):
-            result, error = analyze_pdf(st.session_state.uploaded_pdf_bytes, password, st.session_state.loan_companies)
-        if error == "password_required":
-            st.warning("This PDF is password protected. Enter the password and click Analyze Statement again.")
-        elif error == "wrong_password":
-            st.error("Wrong password or PDF could not be unlocked.")
-        else:
-            st.session_state.analysis = result
-            st.success("Analysis complete.")
-
-    analysis = st.session_state.get("analysis")
-
-    with right_col:
-        # metrics row
-        if analysis:
-            risk = analysis["risk_profile"]
-            risk_bg, risk_fg = risk_colors(risk["rating"])
-            total_paid_in = risk["total_paid_in"]
-            total_installments = risk["total_loan"]
-            total_received = sum(row["Loan Received"] for row in analysis.get("cashflow_rows", []))
-            customer_name = analysis["customer_name"]
-            tx_count = len(analysis["transactions"])
-            risk_text = f'{risk["rating"]} ({risk["score"]})'
-        else:
-            total_paid_in = total_installments = total_received = 0.0
-            customer_name = "N/A"
-            tx_count = 0
-            risk_text = "N/A"
-            risk_bg, risk_fg = "#E2E8F0", "#0F172A"
-
-        m1, m2, m3, m4, m5, m6 = st.columns([1.2, 1.2, 1.35, 1.1, 1.1, 1.0])
-        with m1:
-            style_metric_card("Customer Name", customer_name, "#D9EAF7", "#0F2B46")
-        with m2:
-            style_metric_card("Transactions Parsed", str(tx_count), "#D9E4F7", "#1E3A8A")
-        with m3:
-            style_metric_card("Monthly Paid In Total", money(total_paid_in), "#D9FBE7", "#166534")
-        with m4:
-            style_metric_card("Loan Received", money(total_received), "#D9F3FB", "#075985")
-        with m5:
-            style_metric_card("Installment Paid", money(total_installments), "#FFEBD1", "#9A3412")
-        with m6:
-            style_metric_card("Risk Rating", risk_text, risk_bg, risk_fg)
-
-        st.markdown('<div class="right-shell">', unsafe_allow_html=True)
-        tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "Executive Dashboard",
-            "Matched Loan Companies",
-            "Monthly Paid In",
-            "Selected Company Analysis",
-            "ELLEGANT CREDIT Summary",
-            "Customer Risk Profile",
-            "Full Summary",
-        ])
-
-        if not analysis:
-            with tab0:
-                st.markdown('<div class="section-card"><h3 class="section-title">Executive Visual Dashboard</h3><div class="section-subtitle">Upload a statement and click Analyze Statement to generate the dashboard.</div></div>', unsafe_allow_html=True)
-            with tab1:
-                st.info("No statement analyzed yet.")
-            with tab2:
-                st.info("No statement analyzed yet.")
-            with tab3:
-                st.info("No statement analyzed yet.")
-            with tab4:
-                st.info("No statement analyzed yet.")
-            with tab5:
-                st.info("No statement analyzed yet.")
-            with tab6:
-                st.info("No statement analyzed yet.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        with tab0:
-            st.markdown('<div class="section-card"><h3 class="section-title">Executive Visual Dashboard</h3><div class="section-subtitle">This dashboard compares customer income, loan disbursements received, and installments repaid to matched loan companies.</div></div>', unsafe_allow_html=True)
-            chart_left, chart_right = st.columns(2)
-            monthly_chart_rows = []
-            for month, vals in sorted(analysis["cashflow_monthly"].items()):
-                monthly_chart_rows.append({
-                    "Month": month,
-                    "Normal Paid In": vals.get("paid_in_excluding_matches", 0.0),
-                    "Loan Received": vals.get("loan_received", 0.0),
-                    "Installments Paid": vals.get("installments_paid", 0.0),
-                })
-            with chart_left:
-                st.subheader("Monthly Cashflow Comparison")
-                if monthly_chart_rows:
-                    chart_df = pd.DataFrame(monthly_chart_rows).set_index("Month")
-                    st.bar_chart(chart_df, use_container_width=True)
-                else:
-                    st.info("No monthly cashflow data available.")
-            with chart_right:
-                st.subheader("Installments by Loan Company")
-                company_chart_rows = [
-                    {"Loan Company": row["Loan Company"], "Installments Paid": row["Installments Paid"]}
-                    for row in analysis.get("cashflow_rows", []) if row["Installments Paid"] > 0
-                ]
-                if company_chart_rows:
-                    company_df = pd.DataFrame(company_chart_rows).set_index("Loan Company")
-                    st.bar_chart(company_df, use_container_width=True)
-                else:
-                    st.info("No installment data available.")
-            st.subheader("Loan Company Cashflow Summary")
-            if analysis.get("cashflow_rows"):
-                df = pd.DataFrame(analysis["cashflow_rows"])
-                for col in ["Loan Received", "Installments Paid", "Net Position"]:
-                    df[col] = df[col].map(money)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No matched loan-company cashflows were found.")
-
-        with tab1:
-            matched_rows = []
-            for term, result in analysis["search_results"].items():
-                if result["count"] > 0:
-                    matched_rows.append({
-                        "Loan Company": term,
-                        "Total Matches": result["count"],
-                        "Page Number(s)": ", ".join(str(p) for p in sorted(result["pages"])),
-                    })
-            if matched_rows:
-                st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
-            else:
-                st.warning("No loan companies matched in the PDF.")
-
-        with tab2:
-            monthly_rows = []
-            for month in sorted(analysis["monthly"].keys()):
-                values = analysis["monthly"][month]
-                monthly_rows.append({
-                    "Month": month,
-                    "Paid In Excluding Matches": money(values["paid_in_excluding_matches"]),
-                    "Counted Rows": values["counted_paid_in_rows"],
-                    "Paid In Excluded": money(values["paid_in_excluded_matched"]),
-                    "Excluded Rows": values["excluded_paid_in_rows"],
-                })
-            if monthly_rows:
-                st.dataframe(pd.DataFrame(monthly_rows), use_container_width=True, hide_index=True)
-            else:
-                st.warning("No monthly Paid In rows were found.")
-
-        with tab3:
-            st.markdown('<div class="section-card"><h3 class="section-title">Selected Company Analysis</h3><div class="section-subtitle">Select a matched company to view its loan receipts, installment payments, and inferred loan cycles.</div></div>', unsafe_allow_html=True)
-            companies = [row["Loan Company"] for row in analysis.get("cashflow_rows", [])]
-            if companies:
-                selected_company = st.selectbox("Select loan company", companies)
-                events = analysis.get("company_transactions", {}).get(selected_company, [])
-                received_total = sum(e.get("received", 0.0) for e in events)
-                paid_total = sum(e.get("paid", 0.0) for e in events)
-                sc1, sc2, sc3, sc4 = st.columns(4)
-                with sc1: style_metric_card("Loan Received", money(received_total), "#D9F3FB", "#075985")
-                with sc2: style_metric_card("Installments Paid", money(paid_total), "#FFEBD1", "#9A3412")
-                with sc3: style_metric_card("Net Position", money(received_total - paid_total), "#E2E8F0", "#0F172A")
-                with sc4: style_metric_card("Transactions", str(len(events)), "#D9E4F7", "#1E3A8A")
-                event_rows = []
-                for event in events:
-                    event_rows.append({
-                        "Date": event.get("date", ""),
-                        "Type": event.get("type", ""),
-                        "Receipt No.": event.get("receipt", ""),
-                        "Loan Received": money(event.get("received", 0.0)) if event.get("received", 0.0) else "",
-                        "Installment Paid": money(event.get("paid", 0.0)) if event.get("paid", 0.0) else "",
-                        "Page": event.get("page", ""),
-                    })
-                st.subheader("Transactions")
-                st.dataframe(pd.DataFrame(event_rows), use_container_width=True, hide_index=True)
-                cycle_rows = [row for row in analysis.get("cycle_rows", []) if row["Loan Company"] == selected_company]
-                if cycle_rows:
-                    df = pd.DataFrame(cycle_rows)
-                    for col in ["Loan Received", "Installments Paid", "Net Position"]:
-                        df[col] = df[col].map(money)
-                    st.subheader("Inferred Loan Cycles")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No matched company analysis is available.")
-
-        with tab4:
-            st.markdown('<div class="section-card"><h3 class="section-title">ELLEGANT CREDIT LTD Payment Summary</h3><div class="section-subtitle">This block lists each ELLEGANT CREDIT transaction by month, including date paid, receipt number, and amount paid.</div></div>', unsafe_allow_html=True)
-            if analysis["ellegant_rows"]:
-                df = pd.DataFrame(analysis["ellegant_rows"])
-                df["Amount Paid"] = df["Amount Paid"].map(money)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("No ELLEGANT CREDIT LTD transactions found.")
-
-        with tab5:
-            st.markdown(
-                f"""
-                <div class="section-card">
-                    <h3 class="section-title">Customer Risk Profile</h3>
-                    <div class="section-subtitle">Formula: Total loan repayment to matched loan companies ÷ Total Paid In amount × 100</div>
-                    <h2 style="color:{risk_fg}; margin-bottom:0;">{risk['rating']} — Score {risk['score']}</h2>
-                    <p style="font-size:1.05rem;"><b>Loan Percentage:</b> {risk['percentage']:.2f}%</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            guide = pd.DataFrame([
-                {"Loan Percentage of Total Amount": "0% - 10%", "Risk Rating": "Very Good", "Score": 5},
-                {"Loan Percentage of Total Amount": "11% - 25%", "Risk Rating": "Good", "Score": 4},
-                {"Loan Percentage of Total Amount": "26% - 50%", "Risk Rating": "Fair", "Score": 3},
-                {"Loan Percentage of Total Amount": "51% - 75%", "Risk Rating": "Risky", "Score": 2},
-                {"Loan Percentage of Total Amount": "Above 75%", "Risk Rating": "Very Risky", "Score": 1},
-            ])
-            st.dataframe(guide, use_container_width=True, hide_index=True)
-            if analysis["loan_rows"]:
-                df = pd.DataFrame(analysis["loan_rows"])
-                df["Amount Paid"] = df["Amount Paid"].map(money)
-                st.subheader("Loan repayment transactions used")
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
-        with tab6:
-            st.download_button(
-                "Download Summary TXT",
-                data=analysis["report"].encode("utf-8"),
-                file_name="mutemi_mpesa_mobile_summary.txt",
-                mime="text/plain",
-                use_container_width=False,
-            )
-            st.text_area("Full Summary", analysis["report"], height=520)
-
-        st.markdown('</div>', unsafe_allow_html=True)
+    root = tk.Tk()
+    MpesaStatementApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
