@@ -20,7 +20,7 @@ DEFAULT_LOAN_COMPANIES = [
     "UMOJA UFANISI", "INSPIRE CREDIT", "PEMBENI VENTURE", "SAMAWATI", "SIMPLEPAY",
     "OYA CREDIT", "TICK CREDIT", "PALLA", "CHEREHANI", "MWENYEJI INVESTMENT",
     "EDENBRIDGE", "BUSINESS CASH ADVANCE", "SASA PAY", "BIDII CREDIT", "INUKA",
-    "ECLOF", "BETIKA", "WAKANDA", "OXBRIDGE", "THIKA FAHALI EDEN INVESTMENT LTD", "PREMIER KENYA", "Premier SuperKwik", "Azura credit", "Ceres Tech Limited", "Credit Risk Tick", "Easy Kash", "Sure Credit", "Rapid Cash", "Zillions Credit", "Creditarea Capital", "payablu", "ADJACENT POSSIBLE FINANCE LIMITED", "Mogo Auto Limited", "PEMBENI CASH LIMITED", "UMOJA FANISI",
+    "ECLOF", "BETIKA", "WAKANDA", "OXBRIDGE", "BETPAWA", "ODIBETS","THIKA FAHALI EDEN INVESTMENT LTD", "PREMIER KENYA", "Premier SuperKwik", "Azura credit", "Ceres Tech Limited", "Credit Risk Tick", "Easy Kash", "Sure Credit", "Rapid Cash", "Zillions Credit", "Creditarea Capital", "payablu", "ADJACENT POSSIBLE FINANCE LIMITED", "Mogo Auto Limited", "PEMBENI CASH LIMITED", "UMOJA FANISI",
 ]
 
 ELLEGANT_TERMS = ["ELLEGANT CREDIT LTD", "ELEGANT CREDIT LTD"]
